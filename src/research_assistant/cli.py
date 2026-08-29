@@ -394,6 +394,7 @@ def relink() -> None:
     sync. Idempotent — safe to re-run after any expand.
     """
     papers_dir = _papers_dir()
+    _backfill_openalex_ids(papers_dir)
     _, by_openalex = vault.index(papers_dir)
     if not by_openalex:
         typer.secho(
@@ -455,6 +456,39 @@ def relink() -> None:
     typer.secho(
         f"Wrote {len(members)} topic hub(s) to {topics_dir}", fg=typer.colors.GREEN
     )
+
+
+def _backfill_openalex_ids(papers_dir: Path) -> int:
+    """Give every note with a DOI its OpenAlex id, so the linker can see it.
+
+    ``just paper`` records only what Crossref returns, so a note added by hand
+    carries no ``openalex_id`` and would silently sit outside the citation
+    graph. Doing this here rather than in ``paper`` keeps the single-paper path
+    free of a second lookup, and repairs notes added before this existed.
+    """
+    needing = {
+        str(front["doi"]): path
+        for path in sorted(papers_dir.glob("*.md"))
+        if (front := vault.read_frontmatter(path)).get("doi")
+        and not front.get("openalex_id")
+    }
+    if not needing:
+        return 0
+
+    with httpx.Client(follow_redirects=True) as client:
+        works = graph.fetch_by_doi(sorted(needing), client=client)
+
+    repaired = 0
+    for work in works:
+        doi = _work_doi(work)
+        path = needing.get(doi) if doi else None
+        if path is not None and vault.update_frontmatter(
+            path, {"openalex_id": graph.bare_id(str(work.get("id", "")))}
+        ):
+            repaired += 1
+    if repaired:
+        typer.echo(f"Backfilled openalex_id on {repaired} note(s).")
+    return repaired
 
 
 @app.command()
