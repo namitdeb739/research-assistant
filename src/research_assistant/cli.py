@@ -457,5 +457,54 @@ def relink() -> None:
     )
 
 
+@app.command()
+def tidy(
+    abstracts: Annotated[
+        bool, typer.Option("--abstracts/--no-abstracts", help="Backfill from OpenAlex")
+    ] = True,
+) -> None:
+    """Reformat note bodies to the template, and fill any abstract still missing.
+
+    Notes were written by more than one code path over time and drifted into
+    several whitespace shapes. This normalises them so a diff shows a changed
+    sentence rather than a changed blank line. Section *content* is only ever
+    reordered into the template, never rewritten, and headings the template does
+    not know about are kept.
+    """
+    papers_dir = _papers_dir()
+    _, by_openalex = vault.index(papers_dir)
+
+    filled: dict[Path, str] = {}
+    if abstracts:
+        missing = {
+            ident: path
+            for ident, path in by_openalex.items()
+            if not vault.parse_body(
+                vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+            ).get("Abstract")
+        }
+        if missing:
+            with httpx.Client(follow_redirects=True) as client:
+                for work in graph.fetch_works(sorted(missing), client=client):
+                    path = missing.get(graph.bare_id(str(work.get("id", ""))))
+                    text = sources._openalex_abstract(work)
+                    if path is not None and text:
+                        filled[path] = text
+
+    reformatted = 0
+    for path in sorted(papers_dir.glob("*.md")):
+        text = path.read_text(encoding="utf-8")
+        sections = vault.parse_body(vault._split_frontmatter(text)[1])
+        if path in filled:
+            sections["Abstract"] = filled[path]
+        if vault.write_body(path, vault.render_body(sections)):
+            reformatted += 1
+
+    typer.secho(
+        f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s).",
+        fg=typer.colors.GREEN,
+    )
+
+
 if __name__ == "__main__":
     app()

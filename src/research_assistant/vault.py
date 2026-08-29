@@ -29,7 +29,7 @@ import yaml
 from earth_computers.refs.models import Paper
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Mapping, Sequence
     from pathlib import Path
 
 # PDFs sit beside the notes, in a sibling of the papers folder. Obsidian
@@ -57,6 +57,14 @@ _FORBIDDEN = re.compile(r'[:*?"<>|#^\[\]]')
 
 _FENCE = "---"
 _PDF_MAGIC = b"%PDF-"
+
+# The note body is a fixed set of sections in a fixed order. ``PDF`` is the only
+# one dropped when empty; the other three are prompts, and a missing heading is
+# a worse invitation to write than an empty one.
+BODY_SECTIONS = ("Key takeaway", "Abstract", "Notes")
+PDF_SECTION = "PDF"
+
+_HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
 
 
 class VaultError(Exception):
@@ -148,14 +156,10 @@ def note_text(
     dumped = yaml.safe_dump(front, sort_keys=False, allow_unicode=True, width=10_000)
     abstract = paper.abstract or ""
     # The embed goes last: a rendered PDF is tall, and the notes matter more.
-    embed = f"\n## PDF\n\n![[{pdf_name}]]\n" if pdf_name else ""
-    return (
-        f"{_FENCE}\n{dumped}{_FENCE}\n\n"
-        f"## Key takeaway\n\n\n"
-        f"## Abstract\n\n{abstract}\n\n"
-        f"## Notes\n"
-        f"{embed}"
+    body = render_body(
+        {"Abstract": abstract, PDF_SECTION: f"![[{pdf_name}]]" if pdf_name else ""}
     )
+    return f"{_FENCE}\n{dumped}{_FENCE}\n\n{body}"
 
 
 def save_pdf(key: str, data: bytes, *, pdfs_dir: Path) -> Path:
@@ -210,6 +214,57 @@ def create_paper(
         encoding="utf-8",
     )
     return path
+
+
+def parse_body(body: str) -> dict[str, str]:
+    """Split a note body into ``{heading: content}``, in document order.
+
+    Headings the template does not know about are kept, so a section the user
+    added by hand survives a reformat.
+    """
+    sections: dict[str, str] = {}
+    matches = list(_HEADING.finditer(body))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(body)
+        sections[match.group(1)] = body[match.end() : end].strip()
+    return sections
+
+
+def render_body(sections: Mapping[str, str]) -> str:
+    """Render the canonical body: one blank line after every heading, always.
+
+    Notes were written by three different code paths over time and drifted into
+    five distinct whitespace shapes. The exact spacing does not matter; having
+    one of them does, because a diff should show a changed sentence rather than
+    a changed blank line.
+    """
+    known = {*BODY_SECTIONS, PDF_SECTION}
+    blocks = [
+        f"## {name}\n\n{content}"
+        if (content := (sections.get(name) or "").strip())
+        else f"## {name}"
+        for name in BODY_SECTIONS
+    ]
+    # Hand-written sections keep their place, after the template's own.
+    blocks.extend(
+        f"## {name}\n\n{content}"
+        for name, raw in sections.items()
+        if name not in known and (content := raw.strip())
+    )
+    if pdf := (sections.get(PDF_SECTION) or "").strip():
+        blocks.append(f"## {PDF_SECTION}\n\n{pdf}")
+    return "\n\n".join(blocks) + "\n"
+
+
+def write_body(path: Path, body: str) -> bool:
+    """Replace a note's body, leaving its frontmatter byte-for-byte."""
+    text = path.read_text(encoding="utf-8")
+    front, existing = _split_frontmatter(text)
+    if not front or existing == body:
+        return False
+    head = text[: len(text) - len(existing)]
+    path.write_text(head + body, encoding="utf-8")
+    return True
 
 
 def topic_link(topic: str) -> str:

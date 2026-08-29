@@ -299,3 +299,79 @@ def test_write_topic_hub_regenerates_wholesale(tmp_path: Path) -> None:
 
     assert "[[Dropped]]" not in path.read_text(encoding="utf-8")
     assert vault.read_frontmatter(path)["papers"] == 1
+
+
+def test_render_body_puts_one_blank_line_after_every_heading() -> None:
+    body = vault.render_body({"Abstract": "Soil powers sensing."})
+
+    assert body == (
+        "## Key takeaway\n\n## Abstract\n\nSoil powers sensing.\n\n## Notes\n"
+    )
+
+
+def test_render_body_omits_only_the_pdf_section_when_empty() -> None:
+    """The other three are prompts: a missing heading invites writing less."""
+    body = vault.render_body({})
+
+    assert body == "## Key takeaway\n\n## Abstract\n\n## Notes\n"
+    assert "## PDF" not in body
+
+
+def test_render_body_places_the_pdf_last() -> None:
+    body = vault.render_body({"Abstract": "A", "PDF": "![[k.pdf]]"})
+
+    assert body.endswith("## PDF\n\n![[k.pdf]]\n")
+
+
+def test_parse_body_round_trips_through_render() -> None:
+    original = vault.render_body({"Abstract": "A", "Notes": "My note", "PDF": "![[k]]"})
+
+    assert vault.render_body(vault.parse_body(original)) == original
+
+
+def test_render_body_is_idempotent_over_the_legacy_shapes() -> None:
+    """Every historical whitespace shape must collapse to the same skeleton."""
+    legacy = [
+        "## Key takeaway\n\n\n## Abstract\n\nA\n\n## Notes\n",
+        "## Key takeaway\n\n\n## Abstract\n\n\n\n## Notes\n",
+        "## Key takeaway\n\n\n## Abstract\n\nA\n\n## Notes\n\n## PDF\n\n![[k]]\n",
+    ]
+    once = [vault.render_body(vault.parse_body(b)) for b in legacy]
+
+    assert all(vault.render_body(vault.parse_body(b)) == b for b in once)
+    assert once[0] == "## Key takeaway\n\n## Abstract\n\nA\n\n## Notes\n"
+
+
+def test_parse_body_keeps_a_hand_written_section(tmp_path: Path) -> None:
+    body = "## Key takeaway\n\nMine\n\n## Abstract\n\nA\n\n## My thoughts\n\nKeep me\n"
+
+    rendered = vault.render_body(vault.parse_body(body))
+
+    assert "## My thoughts\n\nKeep me" in rendered
+    assert "Mine" in rendered
+
+
+def test_write_body_leaves_frontmatter_byte_for_byte(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    front_text = text[: text.index("\n---\n") + len("\n---\n")]
+
+    assert vault.write_body(path, vault.render_body({"Notes": "Rewritten"}))
+
+    assert path.read_text(encoding="utf-8").startswith(front_text)
+    assert vault.read_frontmatter(path)["cite_key"] == "yen2023soil"
+
+
+def test_write_body_is_a_noop_when_unchanged(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    body = vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+
+    assert vault.write_body(path, body) is False
+
+
+def test_new_notes_already_match_the_template(tmp_path: Path) -> None:
+    """create_paper and tidy must not be able to disagree."""
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    body = vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+
+    assert vault.render_body(vault.parse_body(body)) == body
