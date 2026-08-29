@@ -8,14 +8,24 @@ empty on purpose — those are yours to fill in Obsidian.
 from __future__ import annotations
 
 import re
-from typing import Any
+import time
+from typing import TYPE_CHECKING, Any
 
 import httpx
 
 from earth_computers.refs.models import Paper
 
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
 CROSSREF_API = "https://api.crossref.org/works"
 OPENALEX_API = "https://api.openalex.org/works"
+
+# Harvesting the citation graph makes hundreds of sequential calls where adding
+# one paper made two. A single transient 503 would otherwise abort the run.
+RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
+MAX_ATTEMPTS = 4
+BACKOFF_SECONDS = 1.0
 
 # Crossref asks for a contact address in the User-Agent for the polite pool.
 _USER_AGENT = "earth-computers/0.1 (mailto:namitdeb739@gmail.com)"
@@ -65,11 +75,43 @@ def _first(value: Any) -> str | None:
     return None
 
 
+def _retry_after(response: httpx.Response, attempt: int) -> float:
+    """Seconds to wait before retrying, honouring ``Retry-After`` if sent."""
+    header = response.headers.get("Retry-After")
+    if header:
+        try:
+            seconds: float = float(str(header))
+        except ValueError:
+            pass
+        else:
+            return seconds if seconds > 0.0 else 0.0
+    return BACKOFF_SECONDS * (2.0**attempt)
+
+
+def get_with_retry(
+    url: str,
+    *,
+    client: httpx.Client,
+    timeout: float = 30.0,
+    sleep: Callable[[float], None] = time.sleep,
+) -> httpx.Response:
+    """GET ``url``, retrying on rate limits and transient server errors.
+
+    Returns the last response either way — the caller still decides what a 404
+    or a 500 means, so nothing is swallowed here.
+    """
+    response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
+    for attempt in range(MAX_ATTEMPTS - 1):
+        if response.status_code not in RETRY_STATUSES:
+            return response
+        sleep(_retry_after(response, attempt))
+        response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
+    return response
+
+
 def fetch_crossref(doi: str, *, client: httpx.Client) -> dict[str, Any]:
     """Return the raw Crossref ``message`` object for ``doi``."""
-    response = client.get(
-        f"{CROSSREF_API}/{doi}", headers={"User-Agent": _USER_AGENT}, timeout=30.0
-    )
+    response = get_with_retry(f"{CROSSREF_API}/{doi}", client=client)
     if response.status_code == 404:
         raise DoiLookupError(f"Crossref has no record for DOI {doi!r}")
     response.raise_for_status()
@@ -81,9 +123,7 @@ def fetch_crossref(doi: str, *, client: httpx.Client) -> dict[str, Any]:
 
 def fetch_openalex(doi: str, *, client: httpx.Client) -> dict[str, Any] | None:
     """Return the OpenAlex work for ``doi``, or ``None`` if it is not indexed."""
-    response = client.get(
-        f"{OPENALEX_API}/doi:{doi}", headers={"User-Agent": _USER_AGENT}, timeout=30.0
-    )
+    response = get_with_retry(f"{OPENALEX_API}/doi:{doi}", client=client)
     if response.status_code == 404:
         return None
     response.raise_for_status()
@@ -178,6 +218,87 @@ _ENTRY_TYPES = {
     "posted-content": "misc",
     "report": "techreport",
 }
+
+# OpenAlex uses its own vocabulary for the same distinction.
+_OPENALEX_ENTRY_TYPES = {
+    "article": "article",
+    "conference-paper": "inproceedings",
+    "proceedings-article": "inproceedings",
+    "book": "book",
+    "book-chapter": "incollection",
+    "dissertation": "phdthesis",
+    "preprint": "misc",
+    "report": "techreport",
+    "dataset": "misc",
+    "other": "misc",
+}
+
+
+def _openalex_authors(work: dict[str, Any]) -> tuple[str, ...]:
+    authors: list[str] = []
+    for entry in work.get("authorships", []):
+        if not isinstance(entry, dict):
+            continue
+        author = entry.get("author")
+        name = author.get("display_name") if isinstance(author, dict) else None
+        if isinstance(name, str) and name.strip():
+            authors.append(name.strip())
+    return tuple(authors)
+
+
+def _openalex_venue(work: dict[str, Any]) -> str | None:
+    location = work.get("primary_location")
+    if not isinstance(location, dict):
+        return None
+    source = location.get("source")
+    if not isinstance(source, dict):
+        return None
+    name = source.get("display_name")
+    return str(name).strip() or None if isinstance(name, str) else None
+
+
+def paper_from_openalex(work: dict[str, Any]) -> Paper:
+    """Build a :class:`Paper` from OpenAlex alone.
+
+    The fallback for the handful of works Crossref 404s on but OpenAlex knows —
+    a note with slightly scrappier metadata beats losing the paper entirely.
+    """
+    title = work.get("title") or work.get("display_name") or "Untitled"
+    doi = work.get("doi")
+    year = work.get("publication_year")
+
+    open_access: str | None = None
+    oa = work.get("open_access")
+    if isinstance(oa, dict) and isinstance(oa.get("oa_status"), str):
+        open_access = str(oa["oa_status"]).capitalize()
+
+    pdf_url: str | None = None
+    best = work.get("best_oa_location")
+    if isinstance(best, dict) and isinstance(best.get("pdf_url"), str):
+        pdf_url = str(best["pdf_url"])
+
+    normalized_doi = (
+        str(doi).strip().removeprefix("https://doi.org/").lower()
+        if isinstance(doi, str) and doi.strip()
+        else None
+    )
+    return Paper(
+        title=" ".join(str(title).split()),
+        authors=_openalex_authors(work),
+        year=int(year) if isinstance(year, int) else None,
+        doi=normalized_doi,
+        venue=_openalex_venue(work),
+        abstract=_openalex_abstract(work),
+        url=f"https://doi.org/{normalized_doi}" if normalized_doi else None,
+        citations=(
+            work["cited_by_count"]
+            if isinstance(work.get("cited_by_count"), int)
+            else None
+        ),
+        open_access=open_access,
+        pdf_url=pdf_url,
+        entry_type=_OPENALEX_ENTRY_TYPES.get(str(work.get("type", "")), "article"),
+    )
 
 
 def resolve(raw_doi: str, *, client: httpx.Client | None = None) -> Paper:

@@ -8,9 +8,15 @@ itself. Judgements about it (is it any good, does it belong in related work) and
 progress through it (read yet?) are prose in the note body, not properties: a
 five-point scale in a table is a worse record of an opinion than a sentence is.
 
-A note is written once and never rewritten: Obsidian owns it afterwards, and its
-property editor reformats frontmatter freely. Reading tolerates that; writing
-does not fight it.
+A note's *body* is written once and never rewritten: Obsidian owns it
+afterwards, and its property editor reformats frontmatter freely. Reading
+tolerates that; writing does not fight it.
+
+The one exception is :func:`update_frontmatter`, which the citation-graph linker
+uses to refresh ``cites``, ``topics`` and ``tags`` — facts about where a paper
+sits in the graph, which change as the vault grows and so cannot be write-once.
+It rewrites only the keys it is given, preserves the existing key order, and
+leaves the body byte-for-byte identical.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ import yaml
 from earth_computers.refs.models import Paper
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 # PDFs sit beside the notes, in a sibling of the papers folder. Obsidian
@@ -46,14 +53,22 @@ class VaultError(Exception):
 
 
 def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
-    """Split a note into its frontmatter mapping and its body."""
+    """Split a note into its frontmatter mapping and its body.
+
+    The split is on the *first* closing fence only. A ``---`` horizontal rule
+    later in the prose is body, not a delimiter — splitting on it as well would
+    silently truncate the note, which matters now that
+    :func:`update_frontmatter` reattaches the body it reads here.
+    """
     if not text.startswith(_FENCE):
         return {}, text
-    parts = text.split(f"\n{_FENCE}", 2)
-    if len(parts) < 2:
+    rest = text[len(_FENCE) :]
+    marker = f"\n{_FENCE}"
+    end = rest.find(marker)
+    if end == -1:
         return {}, text
-    loaded = yaml.safe_load(parts[0][len(_FENCE) :])
-    body = parts[1].lstrip("\n")
+    loaded = yaml.safe_load(rest[:end])
+    body = rest[end + len(marker) :].lstrip("\n")
     return (loaded if isinstance(loaded, dict) else {}), body
 
 
@@ -80,13 +95,25 @@ def note_name(title: str, key: str) -> str:
     return cleaned if any(char.isalnum() for char in cleaned) else key
 
 
-def note_text(paper: Paper, key: str, *, pdf_name: str | None = None) -> str:
+def note_text(
+    paper: Paper,
+    key: str,
+    *,
+    pdf_name: str | None = None,
+    openalex_id: str | None = None,
+    topics: Sequence[str] = (),
+    tags: Sequence[str] = ("paper",),
+) -> str:
     """Render the full Markdown note for ``paper``.
 
     The abstract goes in the body, not the frontmatter: Obsidian rewrites
     multi-line properties on edit, and it is 2000 characters of noise in a table.
     ``pdf_name`` embeds the saved PDF; without one the note still records
     ``pdf_url`` so the paper can be fetched by hand later.
+
+    ``openalex_id`` is the join key for the citation graph, and the only way to
+    identify the works that have no DOI. Like the DOI it is an intrinsic
+    property of the resource, so it belongs in frontmatter.
     """
     front: dict[str, Any] = {
         "title": paper.title,
@@ -96,15 +123,16 @@ def note_text(paper: Paper, key: str, *, pdf_name: str | None = None) -> str:
         "year": paper.year,
         "venue": paper.venue,
         "doi": paper.doi,
+        "openalex_id": openalex_id,
         "url": paper.url,
         "pdf": f"[[{pdf_name}]]" if pdf_name else None,
         "pdf_url": paper.pdf_url,
         "code_url": None,
         "citations": paper.citations,
         "open_access": paper.open_access.lower() if paper.open_access else None,
-        "topics": [],
+        "topics": list(topics),
         "cites": [],
-        "tags": ["paper"],
+        "tags": list(tags),
     }
     dumped = yaml.safe_dump(front, sort_keys=False, allow_unicode=True, width=10_000)
     abstract = paper.abstract or ""
@@ -145,15 +173,80 @@ def find_by_doi(doi: str, *, papers_dir: Path) -> Path | None:
 
 
 def create_paper(
-    paper: Paper, key: str, *, papers_dir: Path, pdf_name: str | None = None
+    paper: Paper,
+    key: str,
+    *,
+    papers_dir: Path,
+    pdf_name: str | None = None,
+    openalex_id: str | None = None,
+    topics: Sequence[str] = (),
+    tags: Sequence[str] = ("paper",),
 ) -> Path:
     """Write the note into the vault, named for its title. Returns its path."""
     papers_dir.mkdir(parents=True, exist_ok=True)
     path = papers_dir / f"{note_name(paper.title, key)}.md"
     if path.exists():
         raise VaultError(f"{path} already exists — refusing to overwrite it")
-    path.write_text(note_text(paper, key, pdf_name=pdf_name), encoding="utf-8")
+    path.write_text(
+        note_text(
+            paper,
+            key,
+            pdf_name=pdf_name,
+            openalex_id=openalex_id,
+            topics=topics,
+            tags=tags,
+        ),
+        encoding="utf-8",
+    )
     return path
+
+
+def read_frontmatter(path: Path) -> dict[str, Any]:
+    """Return just the frontmatter mapping of one note."""
+    front, _ = _split_frontmatter(path.read_text(encoding="utf-8"))
+    return front
+
+
+def index(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
+    """Build ``(by DOI, by OpenAlex id)`` lookups over the whole vault in one pass.
+
+    :func:`find_by_doi` re-reads every note per call, which is fine for adding a
+    single paper and quadratic when reconciling hundreds against each other.
+    """
+    by_doi: dict[str, Path] = {}
+    by_openalex: dict[str, Path] = {}
+    if not papers_dir.is_dir():
+        return by_doi, by_openalex
+    for path in sorted(papers_dir.glob("*.md")):
+        front = read_frontmatter(path)
+        doi = _str(front.get("doi"))
+        if doi:
+            by_doi.setdefault(doi.lower(), path)
+        openalex_id = _str(front.get("openalex_id"))
+        if openalex_id:
+            by_openalex.setdefault(openalex_id, path)
+    return by_doi, by_openalex
+
+
+def update_frontmatter(path: Path, updates: dict[str, Any]) -> bool:
+    """Rewrite only the named frontmatter keys. Returns whether anything changed.
+
+    The body is reattached byte-for-byte and existing key order is preserved, so
+    a note the user has since written notes into is not disturbed. Keys absent
+    from the note are appended in the order given.
+    """
+    text = path.read_text(encoding="utf-8")
+    front, body = _split_frontmatter(text)
+    if not front:
+        raise VaultError(f"{path} has no frontmatter to update")
+    if all(key in front and front[key] == value for key, value in updates.items()):
+        return False
+
+    merged = dict(front)
+    merged.update(updates)
+    dumped = yaml.safe_dump(merged, sort_keys=False, allow_unicode=True, width=10_000)
+    path.write_text(f"{_FENCE}\n{dumped}{_FENCE}\n\n{body}", encoding="utf-8")
+    return True
 
 
 def _note_to_paper(
