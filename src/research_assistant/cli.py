@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -404,7 +405,23 @@ def relink() -> None:
     with httpx.Client(follow_redirects=True) as client:
         works = graph.fetch_works(sorted(by_openalex), client=client)
 
+    # Count first: a topic earns a hub note, and so a place in the graph, only
+    # once a second paper shares it.
+    topics_of: dict[Path, tuple[str, ...]] = {}
+    frequency: collections.Counter[str] = collections.Counter()
+    for work in works:
+        path = by_openalex.get(graph.bare_id(str(work.get("id", ""))))
+        if path is None:
+            continue
+        names, _ = graph.topics_of(work)
+        topics_of[path] = names
+        frequency.update(names)
+    shared = {t for t, n in frequency.items() if n >= vault.MIN_TOPIC_PAPERS}
+
     changed = 0
+    members: dict[str, list[tuple[str, int | None, int | None]]] = (
+        collections.defaultdict(list)
+    )
     for work in works:
         ident = graph.bare_id(str(work.get("id", "")))
         path = by_openalex.get(ident)
@@ -416,12 +433,27 @@ def relink() -> None:
             if (target := by_openalex.get(graph.bare_id(str(reference)))) is not None
             and target != path
         )
-        topics, _ = graph.topics_of(work)
-        if vault.update_frontmatter(path, {"topics": list(topics), "cites": cites}):
+        kept = [t for t in topics_of.get(path, ()) if t in shared]
+        front = vault.read_frontmatter(path)
+        for topic in kept:
+            members[topic].append(
+                (path.stem, front.get("year"), front.get("citations"))
+            )
+        # Links, not strings: a plain label is not a node, so however well it
+        # groups a table it never reaches the graph.
+        linked = [vault.topic_link(topic) for topic in kept]
+        if vault.update_frontmatter(path, {"topics": linked, "cites": cites}):
             changed += 1
+
+    topics_dir = papers_dir.parent / vault.TOPICS_DIRNAME
+    for topic, papers in sorted(members.items()):
+        vault.write_topic_hub(topic, papers, topics_dir=topics_dir)
 
     typer.secho(
         f"Updated {changed} of {len(by_openalex)} notes.", fg=typer.colors.GREEN
+    )
+    typer.secho(
+        f"Wrote {len(members)} topic hub(s) to {topics_dir}", fg=typer.colors.GREEN
     )
 
 

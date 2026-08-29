@@ -254,3 +254,48 @@ def test_index_builds_both_lookups(tmp_path: Path) -> None:
 
 def test_index_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
     assert vault.index(tmp_path / "absent") == ({}, {})
+
+
+def test_topic_link_is_a_wikilink_not_a_label() -> None:
+    """The whole point: a plain string is not a node in Obsidian's graph."""
+    assert vault.topic_link("Microbial Fuel Cells") == "[[Microbial Fuel Cells]]"
+
+
+def test_topic_link_sanitises_a_filename_hostile_topic() -> None:
+    """A topic with a colon or slash must still resolve to a real note."""
+    assert vault.topic_link("Sensing: Soil/Water") == "[[Sensing - Soil-Water]]"
+
+
+def test_write_topic_hub_lists_papers_newest_first(tmp_path: Path) -> None:
+    path = vault.write_topic_hub(
+        "Soil Power",
+        [("Older Paper", 2011, 40), ("Newer Paper", 2024, None)],
+        topics_dir=tmp_path,
+    )
+
+    body = vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    assert body.index("[[Newer Paper]]") < body.index("[[Older Paper]]")
+    assert "(2024)" in body
+    assert "— 40 citations" in body
+
+
+def test_write_topic_hub_is_tagged_and_counted(tmp_path: Path) -> None:
+    path = vault.write_topic_hub(
+        "Soil Power", [("A", 2020, 1), ("B", 2021, 2)], topics_dir=tmp_path
+    )
+
+    front = vault.read_frontmatter(path)
+    assert front["tags"] == ["topic"]
+    assert front["papers"] == 2
+    assert front["title"] == "Soil Power"
+
+
+def test_write_topic_hub_regenerates_wholesale(tmp_path: Path) -> None:
+    """A topic losing a paper must not leave a stale link behind."""
+    vault.write_topic_hub(
+        "Soil Power", [("A", 2020, 1), ("Dropped", 2019, 1)], topics_dir=tmp_path
+    )
+    path = vault.write_topic_hub("Soil Power", [("A", 2020, 1)], topics_dir=tmp_path)
+
+    assert "[[Dropped]]" not in path.read_text(encoding="utf-8")
+    assert vault.read_frontmatter(path)["papers"] == 1
