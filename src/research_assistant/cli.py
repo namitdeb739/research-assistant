@@ -525,19 +525,47 @@ def tidy(
                     if path is not None and text:
                         filled[path] = text
 
-    reformatted = 0
+    # Publishers behind a bot check have to be saved from a browser, and the
+    # `paper` command says so. Nothing then recorded the file, so adopt any PDF
+    # whose name matches a cite key: the vault should reflect what is on disk.
+    pdfs_dir = papers_dir.parent / vault.PDFS_DIRNAME
+    on_disk = (
+        {path.stem: path.name for path in pdfs_dir.glob("*.pdf")}
+        if pdfs_dir.is_dir()
+        else {}
+    )
+
+    reformatted = adopted = 0
     for path in sorted(papers_dir.glob("*.md")):
-        text = path.read_text(encoding="utf-8")
-        sections = vault.parse_body(vault._split_frontmatter(text)[1])
+        front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
+        sections = vault.parse_body(body)
         if path in filled:
             sections["Abstract"] = filled[path]
+        name = on_disk.get(str(front.get("cite_key") or ""))
+        if name and not front.get("pdf"):
+            vault.update_frontmatter(path, {"pdf": f"[[{name}]]"})
+            sections[vault.PDF_SECTION] = f"![[{name}]]"
+            adopted += 1
         if vault.write_body(path, vault.render_body(sections)):
             reformatted += 1
 
     typer.secho(
-        f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s).",
+        f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s); "
+        f"adopted {adopted} PDF(s).",
         fg=typer.colors.GREEN,
     )
+    orphans = sorted(
+        set(on_disk)
+        - {
+            str(vault.read_frontmatter(p).get("cite_key") or "")
+            for p in papers_dir.glob("*.md")
+        }
+    )
+    if orphans:
+        typer.secho(
+            f"{len(orphans)} PDF(s) match no note: {', '.join(orphans[:5])}",
+            fg=typer.colors.YELLOW,
+        )
 
 
 if __name__ == "__main__":

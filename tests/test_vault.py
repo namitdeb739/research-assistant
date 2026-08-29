@@ -375,3 +375,19 @@ def test_new_notes_already_match_the_template(tmp_path: Path) -> None:
     body = vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
 
     assert vault.render_body(vault.parse_body(body)) == body
+
+
+def test_render_body_adopts_a_hand_saved_pdf(tmp_path: Path) -> None:
+    """A PDF saved from a browser has to reach both the property and the body."""
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    sections = vault.parse_body(
+        vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    )
+    sections[vault.PDF_SECTION] = "![[yen2023soil.pdf]]"
+
+    assert vault.update_frontmatter(path, {"pdf": "[[yen2023soil.pdf]]"})
+    assert vault.write_body(path, vault.render_body(sections))
+
+    text = path.read_text(encoding="utf-8")
+    assert vault.read_frontmatter(path)["pdf"] == "[[yen2023soil.pdf]]"
+    assert text.endswith("## PDF\n\n![[yen2023soil.pdf]]\n")
