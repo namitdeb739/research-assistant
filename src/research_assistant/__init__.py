@@ -1,1 +1,1 @@
-"""Deterministic reference management: Crossref/OpenAlex -> Notion -> BibTeX."""
+"""Deterministic reference management: Crossref/OpenAlex -> Obsidian -> BibTeX."""

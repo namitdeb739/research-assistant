@@ -10,7 +10,7 @@ if TYPE_CHECKING:
     from earth_computers.refs.models import Paper
 
 HEADER = (
-    "% Generated from the Notion “Research Resources” database "
+    "% Generated from the Obsidian “Research Resources” notes "
     "— do not hand-edit.\n"
     "% Regenerate with: just bib\n"
 )

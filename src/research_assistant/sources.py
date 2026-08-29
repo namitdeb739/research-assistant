@@ -2,7 +2,7 @@
 
 No model in the loop: given a DOI, the same record comes back every time.
 Judgement fields (Relevance, Topics, Section, Key Takeaway, Rating) are left
-empty on purpose — those are yours to fill in Notion.
+empty on purpose — those are yours to fill in Obsidian.
 """
 
 from __future__ import annotations
@@ -118,6 +118,7 @@ def build_paper(
 
     citations: int | None = None
     open_access: str | None = None
+    pdf_url: str | None = None
     if openalex is not None:
         if abstract_text is None:
             abstract_text = _openalex_abstract(openalex)
@@ -129,6 +130,11 @@ def build_paper(
             status = oa.get("oa_status")
             if isinstance(status, str):
                 open_access = status.capitalize()
+        best = openalex.get("best_oa_location")
+        if isinstance(best, dict):
+            candidate = best.get("pdf_url")
+            if isinstance(candidate, str):
+                pdf_url = candidate
 
     doi = crossref.get("DOI")
     return Paper(
@@ -141,8 +147,26 @@ def build_paper(
         url=str(crossref.get("URL")) if crossref.get("URL") else None,
         citations=citations,
         open_access=open_access,
+        pdf_url=pdf_url,
         entry_type=_ENTRY_TYPES.get(str(crossref.get("type", "")), "article"),
     )
+
+
+def fetch_pdf(url: str, *, client: httpx.Client) -> bytes | None:
+    """Download an open-access PDF, or ``None`` if it cannot be had.
+
+    Publishers behind a bot check (ACM's DL among them) answer a scripted
+    request with an HTML block page, sometimes under a 200, so the response is
+    only trusted if it actually starts with the PDF magic bytes.
+    """
+    try:
+        response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=60.0)
+    except httpx.HTTPError:
+        return None
+    if response.status_code >= 400:
+        return None
+    data = response.content
+    return data if data.startswith(b"%PDF-") else None
 
 
 _ENTRY_TYPES = {

@@ -1,4 +1,4 @@
-"""Bibliographic record shared by the Crossref, OpenAlex, Notion and BibTeX layers."""
+"""Bibliographic record shared by the Crossref, OpenAlex, vault and BibTeX layers."""
 
 from __future__ import annotations
 
@@ -32,6 +32,7 @@ class Paper:
     url: str | None = None
     citations: int | None = None
     open_access: str | None = None
+    pdf_url: str | None = None
     entry_type: str = "article"
     extra: dict[str, str] = field(default_factory=dict)
 
@@ -45,8 +46,9 @@ class Paper:
     def cite_key(self) -> str:
         """Deterministic ``surnameYEARword`` key.
 
-        Used only when Notion has not computed its own ``Cite Key`` formula, so
-        that the two agree in the common case and never collide silently.
+        Written into the note's ``cite_key`` frontmatter at creation time and
+        read back from there, so the key in ``refs.bib`` is a recorded fact
+        rather than something recomputed on every run.
         """
         surname = _slug(self.first_author_surname or "anon") or "anon"
         year = str(self.year) if self.year is not None else "nd"

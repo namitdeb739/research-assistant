@@ -1,6 +1,6 @@
 """Tests for the pure parts of reference management.
 
-The Crossref/OpenAlex/Notion network calls are not exercised here; the parsing,
+The Crossref/OpenAlex network calls are not exercised here; the parsing,
 key generation and rendering they feed into are.
 """
 
