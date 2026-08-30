@@ -66,6 +66,11 @@ def test_render_entry_uses_journal_for_articles() -> None:
     assert "journal = {IMWUT}" in bibtex.render_entry(paper, "k")
 
 
+def test_render_entry_uses_howpublished_for_misc() -> None:
+    paper = Paper(title="T", venue="FYP final presentation", entry_type="misc")
+    assert "howpublished = {FYP final presentation}" in bibtex.render_entry(paper, "k")
+
+
 def test_escape_protects_latex_specials() -> None:
     assert bibtex.escape("50% & rising_fast") == r"50\% \& rising\_fast"
 

@@ -32,6 +32,17 @@ _ESCAPES = str.maketrans(
 )
 
 
+# Which field carries the venue depends on the entry type, and biblatex silently
+# drops the wrong one: a talk has no journal, a chapter's venue is its book, and
+# a book's is its series.
+_VENUE_FIELD = {
+    "inproceedings": "booktitle",
+    "incollection": "booktitle",
+    "book": "series",
+    "misc": "howpublished",
+}
+
+
 def escape(value: str) -> str:
     """Escape LaTeX special characters in a field value."""
     return value.translate(_ESCAPES)
@@ -45,8 +56,9 @@ def render_entry(paper: Paper, key: str) -> str:
     if paper.year is not None:
         fields.append(("year", str(paper.year)))
     if paper.venue:
-        field = "booktitle" if paper.entry_type == "inproceedings" else "journal"
-        fields.append((field, escape(paper.venue)))
+        fields.append(
+            (_VENUE_FIELD.get(paper.entry_type, "journal"), escape(paper.venue))
+        )
     if paper.doi:
         fields.append(("doi", paper.doi))
     if paper.url:
