@@ -12,7 +12,7 @@ import typer
 from dotenv import load_dotenv
 
 from earth_computers.config import Config
-from earth_computers.refs import bibtex, graph, search, sources, vault
+from earth_computers.refs import bibtex, graph, highlights, search, sources, vault
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -823,6 +823,282 @@ def near(
     # How much of this paper's bibliography `expand` has not pulled in yet.
     total = len(record.cites) + len(unresolved)
     typer.echo(f"\n  cites, not in the vault: {len(unresolved)} of {total} unresolved")
+
+
+def _pdf_of(record: search.Record) -> Path:
+    """The PDF backing a note, or a diagnosis of why there is not one."""
+    if record.pdf_path is None:
+        hint = (
+            f" Save it from a browser: {record.pdf_url}"
+            if record.pdf_url
+            else " No pdf_url recorded either."
+        )
+        typer.secho(
+            f"{record.cite_key} has no PDF on disk.{hint}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    return record.pdf_path
+
+
+def _extract(record: search.Record) -> list[highlights.Highlight]:
+    """Read one note's PDF, reporting what had no recoverable text on stderr."""
+    try:
+        found, skipped = highlights.extract(_pdf_of(record))
+    except highlights.HighlightError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    for reason, note in (
+        (
+            highlights.FREE_DRAW,
+            "no text geometry; re-highlight by selection to capture them",
+        ),
+        (highlights.NO_TEXT, "selected no text \u2014 over a figure?"),
+    ):
+        pages = [s.page for s in skipped if s.reason == reason]
+        if pages:
+            where = ", ".join(f"p{page}" for page in pages)
+            typer.secho(
+                f"skipped {len(pages)} {reason} highlight(s) ({where}) \u2014 {note}",
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+    return found
+
+
+def _notes_section(record: search.Record) -> str:
+    """The note's ``## Notes`` prose. ``tidy`` guarantees the heading exists."""
+    if "Notes" not in record.sections:
+        typer.secho(
+            f"{record.cite_key}: the note has no `## Notes` heading. "
+            "Run `just tidy` first \u2014 this will not synthesise the section.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    return record.sections["Notes"]
+
+
+def _placed(record: search.Record) -> dict[tuple[int, str], str]:
+    """Which heading each quote already in the note sits under.
+
+    This is what makes a re-run sticky: a quote that is already grouped comes
+    back carrying its heading, so stage 2 only has to place the new ones.
+    """
+    _, groups = highlights.split_notes(record.sections.get("Notes", ""))
+    return {
+        (quote.page, quote.text): heading
+        for heading, quotes in groups
+        for quote in quotes
+    }
+
+
+@app.command(name="highlights")
+def highlight(
+    target: Annotated[
+        str | None, typer.Argument(help="Cite key, note name or DOI")
+    ] = None,
+    apply: Annotated[
+        Path | None,
+        typer.Option(
+            "--apply",
+            help="Write the note from a {heading: [order, ...]} JSON grouping",
+        ),
+    ] = None,
+    every: Annotated[
+        bool,
+        typer.Option("--all", help="Count highlights in every note with a PDF"),
+    ] = False,
+    audit: Annotated[
+        bool,
+        typer.Option("--audit", help="Re-derive every quote and check the notes match"),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Machine-readable output for --all/--audit")
+    ] = False,
+) -> None:
+    """Recover the text under a PDF's highlights, verbatim.
+
+    The default output is JSON on stdout: one object per highlight, in reading
+    order, plus the heading it already sits under in the note. Nothing here has
+    a model in it, and no rule touches the case or punctuation of a quote.
+    """
+    papers_dir = _papers_dir()
+    records = _load(papers_dir)
+
+    if audit:
+        _audit_highlights(records, as_json=as_json)
+        return
+
+    if every:
+        _count_highlights(records, as_json=as_json)
+        return
+
+    if target is None:
+        typer.secho(
+            "Give a cite key, or --all, or --audit.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+
+    record = _resolve(records, target)
+    found = _extract(record)
+
+    if apply is not None:
+        _apply_grouping(record, found, apply)
+        return
+
+    placed = _placed(record)
+    typer.echo(
+        json.dumps(
+            [
+                {
+                    "order": h.order,
+                    "page": h.page,
+                    "text": h.text,
+                    "group": placed.get((h.page, h.text)),
+                }
+                for h in found
+            ],
+            indent=2,
+            ensure_ascii=False,
+        )
+    )
+
+
+def _apply_grouping(
+    record: search.Record, found: Sequence[highlights.Highlight], path: Path
+) -> None:
+    """Write the machine-owned region of ``## Notes`` from a grouping by order."""
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(loaded, dict):
+        typer.secho(
+            f"{path}: expected an object of {{heading: [order, ...]}}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    grouping = {str(k): [int(o) for o in v] for k, v in loaded.items()}
+    try:
+        groups = highlights.group_quotes(found, grouping)
+    except highlights.HighlightError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    prose, _ = highlights.split_notes(_notes_section(record))
+    sections = dict(record.sections)
+    # The file's own name, which is what an Obsidian link resolves by.
+    sections["Notes"] = highlights.render_notes(
+        prose, groups, pdf_name=_pdf_of(record).name
+    )
+    changed = vault.write_body(record.path, vault.render_body(sections))
+    count = sum(len(quotes) for _, quotes in groups)
+    typer.secho(
+        f"{'Wrote' if changed else 'Unchanged:'} {count} quote(s) under "
+        f"{len(groups)} heading(s) \u2014 {record.path}",
+        fg=typer.colors.GREEN if changed else typer.colors.BRIGHT_BLACK,
+    )
+
+
+def _count_highlights(records: Sequence[search.Record], *, as_json: bool) -> None:
+    counts: dict[str, int] = {}
+    for record in records:
+        if record.pdf_path is None:
+            continue
+        try:
+            found, _ = highlights.extract(record.pdf_path)
+        except highlights.HighlightError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+            continue
+        if found:
+            counts[record.cite_key] = len(found)
+    if as_json:
+        typer.echo(json.dumps(counts, indent=2))
+        return
+    with_pdf = sum(1 for r in records if r.pdf_path is not None)
+    typer.secho(
+        f"{with_pdf} PDF(s) \u00b7 {len(counts)} highlighted \u00b7 "
+        f"{sum(counts.values())} highlight(s)",
+        fg=typer.colors.CYAN,
+    )
+    for key, count in sorted(counts.items(), key=lambda kv: -kv[1]):
+        typer.echo(f"    {key:<40}{count:>4}")
+
+
+def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> None:
+    """Confirm every quote in the vault is byte-identical to the extractor's.
+
+    A quote in a note that the PDF no longer produces is drift: either the
+    highlight was deleted, or the text was hand-edited. Neither is repaired
+    automatically — the edit may have been deliberate.
+    """
+    drifted: list[dict[str, Any]] = []
+    unwritten: dict[str, int] = {}
+    checked = 0
+    for record in records:
+        if record.pdf_path is None or "Notes" not in record.sections:
+            continue
+        _, groups = highlights.split_notes(record.sections["Notes"])
+        try:
+            found, _ = highlights.extract(record.pdf_path)
+        except highlights.HighlightError as exc:
+            typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
+            continue
+        derived = {(h.page, h.text) for h in found}
+        in_note = {(q.page, q.text) for _, quotes in groups for q in quotes}
+        for page, text in sorted(in_note - derived):
+            # The nearest quote on the same page is what it was probably edited
+            # from, and showing both is what makes the report actionable.
+            same_page = [h.text for h in found if h.page == page]
+            nearest = min(
+                same_page,
+                key=lambda candidate: _distance(candidate, text),
+                default=None,
+            )
+            drifted.append(
+                {
+                    "cite_key": record.cite_key,
+                    "page": page,
+                    "in_note": text,
+                    "extracted": nearest,
+                }
+            )
+        checked += len(in_note)
+        if missing := len(derived - in_note):
+            unwritten[record.cite_key] = missing
+
+    if as_json:
+        typer.echo(
+            json.dumps(
+                {"checked": checked, "drifted": drifted, "unwritten": unwritten},
+                indent=2,
+                ensure_ascii=False,
+            )
+        )
+    else:
+        typer.secho(
+            f"{checked} quote(s) in the vault \u00b7 {len(drifted)} disagreeing with "
+            f"the PDF",
+            fg=typer.colors.GREEN if not drifted else typer.colors.RED,
+        )
+        for entry in drifted:
+            typer.echo(f"\n  {entry['cite_key']} p{entry['page']}")
+            typer.secho(f"    note: {entry['in_note']}", fg=typer.colors.YELLOW)
+            typer.secho(f"    pdf:  {entry['extracted']}", fg=typer.colors.CYAN)
+        if unwritten:
+            total = sum(unwritten.values())
+            names = ", ".join(sorted(unwritten)[:5])
+            typer.secho(
+                f"{total} extracted highlight(s) not yet in a note: {names}",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+    if drifted:
+        raise typer.Exit(1)
+
+
+def _distance(a: str, b: str) -> int:
+    """How unalike two quotes are: enough to pick the one that was edited."""
+    return len(set(a.split()) ^ set(b.split()))
 
 
 @app.command()
