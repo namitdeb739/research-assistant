@@ -125,3 +125,117 @@ def test_build_paper_without_openalex() -> None:
     assert paper.entry_type == "inproceedings"
     assert paper.citations is None
     assert paper.open_access is None
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("W2300484078", "W2300484078"),
+        ("w2300484078", "W2300484078"),
+        ("openalex:W2300484078", "W2300484078"),
+        ("https://openalex.org/W2300484078", "W2300484078"),
+        ("https://api.openalex.org/works/W2300484078", "W2300484078"),
+        ("  W2300484078  ", "W2300484078"),
+    ],
+)
+def test_as_openalex_id_accepts_every_form_it_is_copied_in(
+    raw: str, expected: str
+) -> None:
+    assert sources.as_openalex_id(raw) == expected
+
+
+@pytest.mark.parametrize(
+    "raw",
+    ["10.1145/3631410", "https://doi.org/10.1145/3631410", "W", "A2300484078", ""],
+)
+def test_as_openalex_id_rejects_anything_else(raw: str) -> None:
+    assert sources.as_openalex_id(raw) is None
+
+
+def test_paper_from_openalex_falls_back_to_the_landing_page_without_a_doi() -> None:
+    """USENIX mints no DOI, so the landing page is the only locator there is."""
+    work = {
+        "title": "Passive Wi-Fi: Bringing Low Power to Wi-Fi Transmissions",
+        "publication_year": 2016,
+        "type": "conference-paper",
+        "primary_location": {
+            "landing_page_url": "https://www.usenix.org/conference/nsdi16/…/kellogg"
+        },
+    }
+    paper = sources.paper_from_openalex(work)
+
+    assert paper.doi is None
+    assert paper.url == "https://www.usenix.org/conference/nsdi16/…/kellogg"
+    assert paper.entry_type == "inproceedings"
+
+
+def test_paper_from_openalex_prefers_the_doi_url_when_there_is_one() -> None:
+    work = {
+        "title": "T",
+        "doi": "https://doi.org/10.1145/3631410",
+        "primary_location": {"landing_page_url": "https://example.invalid/t"},
+    }
+    assert sources.paper_from_openalex(work).url == "https://doi.org/10.1145/3631410"
+
+
+def test_manual_source_still_gets_a_cite_key() -> None:
+    """A talk with no DOI is cited the same way anything else is."""
+    paper = Paper(
+        title="Earth Computers",
+        authors=("Sean Wang",),
+        year=2026,
+        venue="NUS School of Computing, FYP final presentation",
+        entry_type="misc",
+    )
+    assert paper.cite_key() == "wang2026earth"
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        (
+            "Environmental Science &amp; Technology",
+            "Environmental Science & Technology",
+        ),
+        (
+            "Energy Harvesting &amp;amp; Energy-Neutral Sensing",
+            "Energy Harvesting & Energy-Neutral Sensing",
+        ),
+        ("nothing to resolve", "nothing to resolve"),
+    ],
+)
+def test_unescape_resolves_entities_to_a_fixed_point(raw: str, expected: str) -> None:
+    assert sources.unescape(raw) == expected
+
+
+def test_strip_jats_keeps_comparisons_that_look_like_tags() -> None:
+    """``p &lt; 0.05] ... [ p &gt;`` is an inequality, not an element."""
+    raw = (
+        "<jats:p>effect for sensor type [ p &lt; 0.05] "
+        "but timestamp [ p &gt; 0.1]</jats:p>"
+    )
+    assert sources._strip_jats(raw) == (
+        "effect for sensor type [ p < 0.05] but timestamp [ p > 0.1]"
+    )
+
+
+def test_build_paper_resolves_entities_in_title_and_venue() -> None:
+    paper = sources.build_paper(
+        {
+            "title": ["Connecting the Twins: Digital Twin Technology &amp; Networks"],
+            "container-title": ["Environmental Science &amp; Technology"],
+            "type": "journal-article",
+        }
+    )
+    assert paper.title == "Connecting the Twins: Digital Twin Technology & Networks"
+    assert paper.venue == "Environmental Science & Technology"
+
+
+def test_paper_from_openalex_resolves_entities_too() -> None:
+    work = {
+        "title": "Soil &amp; Sensing",
+        "primary_location": {"source": {"display_name": "Energy &amp; Environment"}},
+    }
+    paper = sources.paper_from_openalex(work)
+    assert paper.title == "Soil & Sensing"
+    assert paper.venue == "Energy & Environment"

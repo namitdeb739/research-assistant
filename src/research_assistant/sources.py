@@ -1,12 +1,14 @@
 """Deterministic metadata lookup from Crossref and OpenAlex.
 
-No model in the loop: given a DOI, the same record comes back every time.
+No model in the loop: given a DOI or an OpenAlex id, the same record comes back
+every time.
 Judgement fields (Relevance, Topics, Section, Key Takeaway, Rating) are left
 empty on purpose — those are yours to fill in Obsidian.
 """
 
 from __future__ import annotations
 
+import html
 import re
 import time
 from typing import TYPE_CHECKING, Any
@@ -32,10 +34,14 @@ _USER_AGENT = "earth-computers/0.1 (mailto:namitdeb739@gmail.com)"
 
 _JATS_TAG = re.compile(r"<[^>]+>")
 _DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)", re.IGNORECASE)
+_OPENALEX_ID = re.compile(
+    r"^(?:https?://(?:api\.)?openalex\.org/(?:works/)?|openalex:)?(W\d+)$",
+    re.IGNORECASE,
+)
 
 
-class DoiLookupError(Exception):
-    """Raised when a DOI cannot be resolved."""
+class SourceLookupError(Exception):
+    """Raised when a DOI or OpenAlex id cannot be resolved."""
 
 
 def normalize_doi(raw: str) -> str:
@@ -43,9 +49,42 @@ def normalize_doi(raw: str) -> str:
     return _DOI_PREFIX.sub("", raw.strip()).strip("/").lower()
 
 
+def as_openalex_id(raw: str) -> str | None:
+    """Return the bare ``W123`` if ``raw`` names an OpenAlex work, else ``None``.
+
+    Accepts the id on its own, an ``openalex:`` prefix, and either the web or
+    the API URL, so whatever the user copied out of a browser resolves.
+    """
+    match = _OPENALEX_ID.match(raw.strip())
+    return match.group(1).upper() if match else None
+
+
+def unescape(text: str) -> str:
+    """Resolve HTML entities, repeatedly, until the text stops changing.
+
+    Crossref serves ``Environmental Science &amp; Technology`` for a venue whose
+    name contains an ampersand, and ``&amp;amp;`` for at least one that was
+    escaped twice upstream. Left alone these reach ``refs.bib`` verbatim and
+    typeset as the literal text ``&amp;``. The cap is what keeps a pathological
+    record from looping; two rounds clear everything seen so far.
+    """
+    for _ in range(3):
+        resolved = html.unescape(text)
+        if resolved == text:
+            return text
+        text = resolved
+    return text
+
+
 def _strip_jats(text: str) -> str:
-    """Crossref abstracts are JATS XML; flatten to plain text."""
-    return " ".join(_JATS_TAG.sub("", text).split())
+    """Crossref abstracts are JATS XML; flatten to plain text.
+
+    Tags are stripped *before* entities are resolved, never after: abstracts
+    write comparisons as ``p &lt; 0.05``, and unescaping first would turn
+    ``[ p &lt; 0.05] but ... timestamp [ p &gt;`` into something the tag
+    pattern happily eats as an element.
+    """
+    return unescape(" ".join(_JATS_TAG.sub("", text).split()))
 
 
 def _crossref_authors(item: dict[str, Any]) -> tuple[str, ...]:
@@ -113,11 +152,11 @@ def fetch_crossref(doi: str, *, client: httpx.Client) -> dict[str, Any]:
     """Return the raw Crossref ``message`` object for ``doi``."""
     response = get_with_retry(f"{CROSSREF_API}/{doi}", client=client)
     if response.status_code == 404:
-        raise DoiLookupError(f"Crossref has no record for DOI {doi!r}")
+        raise SourceLookupError(f"Crossref has no record for DOI {doi!r}")
     response.raise_for_status()
     message = response.json().get("message")
     if not isinstance(message, dict):
-        raise DoiLookupError(f"Unexpected Crossref response for DOI {doi!r}")
+        raise SourceLookupError(f"Unexpected Crossref response for DOI {doi!r}")
     return message
 
 
@@ -129,6 +168,18 @@ def fetch_openalex(doi: str, *, client: httpx.Client) -> dict[str, Any] | None:
     response.raise_for_status()
     payload = response.json()
     return payload if isinstance(payload, dict) else None
+
+
+def fetch_openalex_work(ident: str, *, client: httpx.Client) -> dict[str, Any]:
+    """Return the OpenAlex work with this bare ``W123`` id."""
+    response = get_with_retry(f"{OPENALEX_API}/{ident}", client=client)
+    if response.status_code == 404:
+        raise SourceLookupError(f"OpenAlex has no work {ident!r}")
+    response.raise_for_status()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise SourceLookupError(f"Unexpected OpenAlex response for {ident!r}")
+    return payload
 
 
 def _openalex_abstract(work: dict[str, Any]) -> str | None:
@@ -145,7 +196,7 @@ def _openalex_abstract(work: dict[str, Any]) -> str | None:
     if not positions:
         return None
     positions.sort()
-    return " ".join(word for _, word in positions)
+    return unescape(" ".join(word for _, word in positions))
 
 
 def build_paper(
@@ -177,12 +228,13 @@ def build_paper(
                 pdf_url = candidate
 
     doi = crossref.get("DOI")
+    venue = _first(crossref.get("container-title"))
     return Paper(
-        title=" ".join(title.split()),
+        title=unescape(" ".join(title.split())),
         authors=_crossref_authors(crossref),
         year=_crossref_year(crossref),
         doi=str(doi).lower() if doi else None,
-        venue=_first(crossref.get("container-title")),
+        venue=unescape(venue) if venue else None,
         abstract=abstract_text,
         url=str(crossref.get("URL")) if crossref.get("URL") else None,
         citations=citations,
@@ -254,7 +306,20 @@ def _openalex_venue(work: dict[str, Any]) -> str | None:
     if not isinstance(source, dict):
         return None
     name = source.get("display_name")
-    return str(name).strip() or None if isinstance(name, str) else None
+    return unescape(str(name).strip()) or None if isinstance(name, str) else None
+
+
+def _openalex_landing_page(work: dict[str, Any]) -> str | None:
+    """The publisher's page for a work, used when it has no DOI to link to.
+
+    USENIX and the other proceedings that mint no DOI are exactly the works
+    that need this, so a note for one still records where it came from.
+    """
+    location = work.get("primary_location")
+    if not isinstance(location, dict):
+        return None
+    landing = location.get("landing_page_url")
+    return str(landing) if isinstance(landing, str) and landing.strip() else None
 
 
 def paper_from_openalex(work: dict[str, Any]) -> Paper:
@@ -283,13 +348,17 @@ def paper_from_openalex(work: dict[str, Any]) -> Paper:
         else None
     )
     return Paper(
-        title=" ".join(str(title).split()),
+        title=unescape(" ".join(str(title).split())),
         authors=_openalex_authors(work),
         year=int(year) if isinstance(year, int) else None,
         doi=normalized_doi,
         venue=_openalex_venue(work),
         abstract=_openalex_abstract(work),
-        url=f"https://doi.org/{normalized_doi}" if normalized_doi else None,
+        url=(
+            f"https://doi.org/{normalized_doi}"
+            if normalized_doi
+            else _openalex_landing_page(work)
+        ),
         citations=(
             work["cited_by_count"]
             if isinstance(work.get("cited_by_count"), int)
@@ -313,6 +382,29 @@ def resolve(raw_doi: str, *, client: httpx.Client | None = None) -> Paper:
         except httpx.HTTPError:
             openalex = None  # OpenAlex is enrichment only; never fail the lookup
         return build_paper(crossref, openalex)
+    finally:
+        if owns_client:
+            active.close()
+
+
+def resolve_source(
+    raw: str, *, client: httpx.Client | None = None
+) -> tuple[Paper, str | None]:
+    """Resolve a DOI or an OpenAlex id. Returns ``(paper, openalex_id)``.
+
+    A DOI still goes to Crossref first, because Crossref is authoritative for
+    the fields the bibliography needs. An OpenAlex id is the way in for the
+    works Crossref cannot know about — USENIX proceedings mint no DOI, so
+    ``W2300484078`` is the only identifier Passive Wi-Fi has.
+    """
+    ident = as_openalex_id(raw)
+    if ident is None:
+        return resolve(raw, client=client), None
+
+    owns_client = client is None
+    active = client or httpx.Client(follow_redirects=True)
+    try:
+        return paper_from_openalex(fetch_openalex_work(ident, client=active)), ident
     finally:
         if owns_client:
             active.close()

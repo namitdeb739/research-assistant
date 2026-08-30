@@ -13,11 +13,10 @@ from dotenv import load_dotenv
 
 from earth_computers.config import Config
 from earth_computers.refs import bibtex, graph, highlights, search, sources, vault
+from earth_computers.refs.models import Paper
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-    from earth_computers.refs.models import Paper
 
 load_dotenv()
 
@@ -31,33 +30,57 @@ def _papers_dir() -> Path:
     return Path(Config().vault_papers_dir)
 
 
+def _describe(record: Paper) -> None:
+    """Echo the three lines that let you check the lookup found the right thing."""
+    typer.echo(f"  {record.title}")
+    if record.authors:
+        shown = ", ".join(record.authors[:3])
+        suffix = " et al." if len(record.authors) > 3 else ""
+        typer.echo(f"  {shown}{suffix}")
+    typer.echo(f"  {record.venue or 'unknown venue'} ({record.year or 'n.d.'})")
+
+
+def _existing_note(
+    record: Paper, openalex_id: str | None, *, papers_dir: Path
+) -> Path | None:
+    """The note already holding this DOI or OpenAlex id, if the vault has one."""
+    by_doi, by_openalex = vault.index(papers_dir)
+    if record.doi and (path := by_doi.get(record.doi.lower())) is not None:
+        return path
+    return by_openalex.get(openalex_id) if openalex_id else None
+
+
 @app.command()
 def paper(
-    doi: Annotated[str, typer.Argument(help="DOI, bare or as a doi.org URL")],
+    source: Annotated[
+        str,
+        typer.Argument(
+            help="DOI or OpenAlex id (W123), bare or as a doi.org/openalex.org URL"
+        ),
+    ],
     force: Annotated[
-        bool, typer.Option("--force", help="Add even if the DOI is already present")
+        bool, typer.Option("--force", help="Add even if the source is already present")
     ] = False,
 ) -> None:
-    """Look up a DOI and add it to the Obsidian Research Resources notes."""
+    """Look up a DOI or OpenAlex id and add it to the Obsidian research notes.
+
+    An OpenAlex id is the way in for work that has no DOI at all: USENIX and
+    several other proceedings mint none, so OpenAlex holds the only identifier.
+    """
     with httpx.Client(follow_redirects=True) as client:
         try:
-            record = sources.resolve(doi, client=client)
-        except sources.DoiLookupError as exc:
+            record, openalex_id = sources.resolve_source(source, client=client)
+        except sources.SourceLookupError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
 
-        typer.echo(f"  {record.title}")
-        if record.authors:
-            shown = ", ".join(record.authors[:3])
-            suffix = " et al." if len(record.authors) > 3 else ""
-            typer.echo(f"  {shown}{suffix}")
-        typer.echo(f"  {record.venue or 'unknown venue'} ({record.year or 'n.d.'})")
+        _describe(record)
 
         papers_dir = _papers_dir()
         key = record.cite_key()
         try:
-            if not force and record.doi:
-                existing = vault.find_by_doi(record.doi, papers_dir=papers_dir)
+            if not force:
+                existing = _existing_note(record, openalex_id, papers_dir=papers_dir)
                 if existing is not None:
                     typer.secho(
                         f"Already in the vault at {existing} — "
@@ -68,11 +91,86 @@ def paper(
 
             pdf_name = _save_pdf(record, key, papers_dir=papers_dir, client=client)
             path = vault.create_paper(
-                record, key, papers_dir=papers_dir, pdf_name=pdf_name
+                record,
+                key,
+                papers_dir=papers_dir,
+                pdf_name=pdf_name,
+                openalex_id=openalex_id,
             )
         except vault.VaultError as exc:
             typer.secho(str(exc), fg=typer.colors.RED, err=True)
             raise typer.Exit(1) from exc
+
+    typer.secho(f"Added: {path}", fg=typer.colors.GREEN)
+    typer.echo("Write the key takeaway and topics in Obsidian.")
+
+
+@app.command()
+def source(
+    title: Annotated[str, typer.Option("--title", help="Title of the resource")],
+    author: Annotated[
+        list[str],
+        typer.Option("--author", help="Author, repeated once per author, in order"),
+    ],
+    year: Annotated[int | None, typer.Option("--year", help="Year of publication")],
+    venue: Annotated[
+        str | None,
+        typer.Option("--venue", help="Where it appeared: talk, vendor, site, report"),
+    ] = None,
+    url: Annotated[str | None, typer.Option("--url", help="Where to find it")] = None,
+    entry_type: Annotated[
+        str,
+        typer.Option("--type", help="BibTeX entry type: misc, techreport, article, …"),
+    ] = "misc",
+    pdf: Annotated[
+        Path | None,
+        typer.Option(
+            "--pdf", exists=True, dir_okay=False, help="A PDF to file with it"
+        ),
+    ] = None,
+    key: Annotated[
+        str | None,
+        typer.Option("--key", help="Cite key, when the derived one reads badly"),
+    ] = None,
+) -> None:
+    """Record a resource that no index knows about, by hand.
+
+    Crossref and OpenAlex cover journals and proceedings and nothing else, but
+    a dissertation cites more than that: a supervisor's slide deck, a vendor
+    technical guide, a datasheet, a standard. Those are still evidence, and a
+    note is the only place they can be cited from. Everything here is what you
+    typed — there is no lookup and nothing to be deterministic about.
+    """
+    record = Paper(
+        title=" ".join(title.split()),
+        authors=tuple(author),
+        year=year,
+        venue=venue,
+        url=url,
+        entry_type=entry_type,
+    )
+    _describe(record)
+
+    papers_dir = _papers_dir()
+    # A corporate author has no surname, so the derived key takes the last word
+    # of the organisation's name — "distribuidas2020waspmote" for Libelium.
+    cite_key = key or record.cite_key()
+    try:
+        pdf_name = (
+            vault.save_pdf(
+                cite_key,
+                pdf.read_bytes(),
+                pdfs_dir=papers_dir.parent / vault.PDFS_DIRNAME,
+            ).name
+            if pdf is not None
+            else None
+        )
+        path = vault.create_paper(
+            record, cite_key, papers_dir=papers_dir, pdf_name=pdf_name
+        )
+    except vault.VaultError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
 
     typer.secho(f"Added: {path}", fg=typer.colors.GREEN)
     typer.echo("Write the key takeaway and topics in Obsidian.")
@@ -348,7 +446,7 @@ def _write_notes(
         if doi:
             try:
                 record = sources.resolve(doi, client=client)
-            except sources.DoiLookupError, httpx.HTTPError:
+            except sources.SourceLookupError, httpx.HTTPError:
                 record = None
         if record is None:
             # Crossref does not know it, or has no DOI to know it by.
@@ -536,12 +634,26 @@ def tidy(
         else {}
     )
 
-    reformatted = adopted = 0
+    reformatted = adopted = unescaped = 0
     for path in sorted(papers_dir.glob("*.md")):
         front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
         sections = vault.parse_body(body)
         if path in filled:
             sections["Abstract"] = filled[path]
+        # Notes added before the lookup resolved entities hold `Environmental
+        # Science &amp; Technology` verbatim, which reaches refs.bib and
+        # typesets as the entity rather than the ampersand.
+        repairs = {
+            field: sources.unescape(str(front[field]))
+            for field in ("title", "venue")
+            if front.get(field) and sources.unescape(str(front[field])) != front[field]
+        }
+        if repairs and vault.update_frontmatter(path, repairs):
+            unescaped += 1
+        if (text := sections.get("Abstract")) and (
+            resolved := sources.unescape(text)
+        ) != text:
+            sections["Abstract"] = resolved
         name = on_disk.get(str(front.get("cite_key") or ""))
         if name and not front.get("pdf"):
             vault.update_frontmatter(path, {"pdf": f"[[{name}]]"})
@@ -552,7 +664,7 @@ def tidy(
 
     typer.secho(
         f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s); "
-        f"adopted {adopted} PDF(s).",
+        f"adopted {adopted} PDF(s); unescaped {unescaped} note(s).",
         fg=typer.colors.GREEN,
     )
     orphans = sorted(
