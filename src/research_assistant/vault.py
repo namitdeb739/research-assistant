@@ -313,6 +313,16 @@ def read_frontmatter(path: Path) -> dict[str, Any]:
     return front
 
 
+def read_note(path: Path) -> tuple[dict[str, Any], str]:
+    """Return ``(frontmatter, body)`` for one note.
+
+    The public form of the split. Readers that need the prose as well as the
+    properties — searching it, reformatting it — would otherwise reach for the
+    private helper.
+    """
+    return _split_frontmatter(path.read_text(encoding="utf-8"))
+
+
 def index(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     """Build ``(by DOI, by OpenAlex id)`` lookups over the whole vault in one pass.
 

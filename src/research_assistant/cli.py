@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import collections
+import json
 from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any
 
@@ -11,7 +12,7 @@ import typer
 from dotenv import load_dotenv
 
 from earth_computers.config import Config
-from earth_computers.refs import bibtex, graph, sources, vault
+from earth_computers.refs import bibtex, graph, search, sources, vault
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -566,6 +567,357 @@ def tidy(
             f"{len(orphans)} PDF(s) match no note: {', '.join(orphans[:5])}",
             fg=typer.colors.YELLOW,
         )
+
+
+def _load(papers_dir: Path) -> list[search.Record]:
+    try:
+        return search.load(papers_dir)
+    except search.SearchError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+
+def _resolve(records: Sequence[search.Record], target: str) -> search.Record:
+    try:
+        return search.resolve(records, target)
+    except search.SearchError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+
+def _citations(record: search.Record) -> str:
+    """``n.d. cit`` for an unrecorded count — which is not the same as zero."""
+    return f"{record.citations} cit" if record.citations is not None else "n.d. cit"
+
+
+def _venue(record: search.Record, width: int = 46) -> str:
+    """Venue names run to 100 characters in this vault; a line has to fit."""
+    name = " ".join((record.venue or "unknown venue").split())
+    return name if len(name) <= width else f"{name[: width - 1]}…"
+
+
+def _headline(record: search.Record) -> str:
+    year = record.year if record.year is not None else "n.d."
+    mark = "[pdf]" if record.has_pdf else "[no pdf]"
+    return (
+        f"{record.title} — {record.byline} · {_venue(record)} {year} · "
+        f"{_citations(record)} · {mark}"
+    )
+
+
+def _as_dict(hit: search.Hit) -> dict[str, Any]:
+    record = hit.record
+    return {
+        "cite_key": record.cite_key,
+        "title": record.title,
+        "authors": list(record.authors),
+        "year": record.year,
+        "venue": record.venue,
+        "citations": record.citations,
+        "doi": record.doi,
+        "openalex_id": record.openalex_id,
+        "topics": list(record.topics),
+        "tags": list(record.tags),
+        "note_path": str(record.path),
+        "pdf_path": str(record.pdf_path) if record.pdf_path else None,
+        "pdf_url": record.pdf_url,
+        "score": round(hit.score, 4),
+        "matched_field": hit.field or None,
+        "snippet": hit.snippet or None,
+    }
+
+
+@app.command()
+def find(
+    query: Annotated[
+        list[str] | None, typer.Argument(help="Words to search for; any may match")
+    ] = None,
+    topic: Annotated[
+        str | None, typer.Option("--topic", help="Only papers under this topic hub")
+    ] = None,
+    tag: Annotated[
+        str | None, typer.Option("--tag", help="Only papers with this tag")
+    ] = None,
+    venue: Annotated[
+        str | None, typer.Option("--venue", help="Substring of the venue name")
+    ] = None,
+    min_year: Annotated[
+        int | None, typer.Option("--min-year", help="Published on or after")
+    ] = None,
+    max_year: Annotated[
+        int | None, typer.Option("--max-year", help="Published on or before")
+    ] = None,
+    min_citations: Annotated[
+        int | None, typer.Option("--min-citations", help="At least this many citations")
+    ] = None,
+    has_pdf: Annotated[
+        bool | None,
+        typer.Option(
+            "--has-pdf/--no-pdf", help="Only papers whose PDF is (not) on disk"
+        ),
+    ] = None,
+    limit: Annotated[int, typer.Option("--limit", help="How many hits to print")] = 10,
+    full: Annotated[
+        bool, typer.Option("--full", help="Print whole notes, not snippets")
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Machine-readable output")
+    ] = False,
+) -> None:
+    """Search the research notes, best match first.
+
+    Terms are OR-ed and ranked by BM25, so throwing synonyms in together widens
+    the net rather than narrowing it: "intermittent batteryless transiently
+    powered" finds papers using any of the three vocabularies.
+
+    With filters but no query, lists the filtered set by citation count — the
+    "show me the shelf" mode.
+    """
+    records = _load(_papers_dir())
+    filtered = search.apply_filters(
+        records,
+        topic=topic,
+        tag=tag,
+        venue=venue,
+        min_year=min_year,
+        max_year=max_year,
+        min_citations=min_citations,
+        has_pdf=has_pdf,
+    )
+
+    text = " ".join(query or [])
+    hits = (
+        search.rank(filtered, text) if text.strip() else search.by_citations(filtered)
+    )
+
+    if as_json:
+        typer.echo(json.dumps([_as_dict(hit) for hit in hits[:limit]], indent=2))
+        return
+
+    shown = hits[:limit]
+    ordering = "" if text.strip() else "   (no query — ranked by citations)"
+    typer.secho(
+        f"{len(records)} notes · {len(hits)} matched · showing {len(shown)}{ordering}",
+        fg=typer.colors.CYAN,
+    )
+    if not shown:
+        typer.secho(
+            "Nothing matched. Try the field's other vocabulary before concluding "
+            "the vault is thin here.",
+            fg=typer.colors.YELLOW,
+        )
+        return
+    typer.echo("")
+
+    for position, hit in enumerate(shown, start=1):
+        record = hit.record
+        typer.echo(f"{position:>2}. {_headline(record)}")
+        typer.secho(f"    {record.cite_key}", fg=typer.colors.BRIGHT_BLACK)
+        if record.topics:
+            typer.echo(_indent(f"topics: {' · '.join(record.topics)}"))
+        if full:
+            for name in (*vault.BODY_SECTIONS,):
+                if content := record.sections.get(name):
+                    typer.echo(f"    ## {name}")
+                    typer.echo(_indent(content, "    "))
+            if record.pdf_path:
+                typer.echo(f"    pdf: {record.pdf_path}")
+        elif hit.snippet:
+            typer.echo(_indent(f"{hit.field}: {hit.snippet}", "    "))
+        typer.echo("")
+
+    if len(hits) > len(shown):
+        typer.secho(
+            f"{len(hits) - len(shown)} more — re-run with --limit {len(hits)}",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+
+
+def _indent(text: str, prefix: str = "    ", width: int = 88) -> str:
+    """Wrap and indent, so a snippet stays visibly inside its own entry."""
+    lines: list[str] = []
+    current = ""
+    for word in text.split():
+        if current and len(prefix) + len(current) + 1 + len(word) > width:
+            lines.append(prefix + current)
+            current = word
+        else:
+            current = f"{current} {word}" if current else word
+    if current:
+        lines.append(prefix + current)
+    return "\n".join(lines)
+
+
+@app.command()
+def show(
+    targets: Annotated[list[str], typer.Argument(help="Cite keys, note names or DOIs")],
+) -> None:
+    """Print whole notes, resolved by cite key, note name or DOI.
+
+    The drill-down after ``find``: note filenames are titles, so they are long
+    and full of punctuation a shell argues with.
+    """
+    records = _load(_papers_dir())
+    for target in targets:
+        record = _resolve(records, target)
+        typer.secho(
+            f"── {record.path.name} " + "─" * max(0, 60 - len(record.path.name)),
+            fg=typer.colors.CYAN,
+        )
+        typer.echo(f"{record.title} · {', '.join(record.authors)}")
+        year = record.year if record.year is not None else "n.d."
+        typer.echo(f"{_venue(record, 88)} {year} · {_citations(record)}")
+        bits = [record.cite_key]
+        if record.doi:
+            bits.append(f"doi:{record.doi}")
+        if record.openalex_id:
+            bits.append(record.openalex_id)
+        if record.open_access:
+            bits.append(f"{record.open_access} OA")
+        typer.echo(" · ".join(bits))
+        if record.topics:
+            typer.echo(f"topics: {' · '.join(record.topics)}")
+        if record.tags:
+            typer.echo(f"tags: {', '.join(record.tags)}")
+        # The path, not just a tick: this is what makes the PDF readable next.
+        typer.echo(f"pdf: {record.pdf_path or record.pdf_url or 'none'}")
+        typer.echo(f"note: {record.path}")
+
+        for name in vault.BODY_SECTIONS:
+            typer.echo("")
+            typer.secho(f"## {name}", fg=typer.colors.GREEN)
+            content = record.sections.get(name, "").strip()
+            # "(empty)" is a fact about the note, not a failure to find one.
+            typer.echo(content if content else "  (empty)")
+        typer.echo("")
+
+
+@app.command()
+def near(
+    target: Annotated[str, typer.Argument(help="Cite key, note name or DOI")],
+) -> None:
+    """Papers this one cites, and papers in the vault citing it.
+
+    The reverse direction is computed by scanning every note's ``cites``: there
+    is deliberately no ``cited_by`` property, and Obsidian's "Linked mentions"
+    pane is not reachable from a terminal.
+    """
+    records = _load(_papers_dir())
+    record = _resolve(records, target)
+    typer.secho(f"{record.title} ({record.cite_key})", fg=typer.colors.CYAN)
+
+    cites, unresolved = search.cites_in_vault(records, record)
+    typer.echo(f"\n  cites, in the vault ({len(cites)})")
+    for other in sorted(cites, key=lambda r: -(r.year or 0)):
+        typer.echo(f"    ← {other.title} · {other.byline} {other.year or 'n.d.'}")
+    if not cites:
+        typer.secho("    none", fg=typer.colors.BRIGHT_BLACK)
+
+    citing = search.cited_by(records, record)
+    typer.echo(f"\n  cited by, in the vault ({len(citing)})")
+    for other in sorted(citing, key=lambda r: -(r.year or 0)):
+        typer.echo(f"    → {other.title} · {other.byline} {other.year or 'n.d.'}")
+    if not citing:
+        typer.secho("    none", fg=typer.colors.BRIGHT_BLACK)
+
+    # How much of this paper's bibliography `expand` has not pulled in yet.
+    total = len(record.cites) + len(unresolved)
+    typer.echo(f"\n  cites, not in the vault: {len(unresolved)} of {total} unresolved")
+
+
+@app.command()
+def pdf(
+    target: Annotated[
+        str | None, typer.Argument(help="Cite key, note name or DOI")
+    ] = None,
+    note: Annotated[
+        str | None,
+        typer.Option("--note", help="Reverse: the note owning this PDF filename"),
+    ] = None,
+    audit: Annotated[
+        bool, typer.Option("--audit", help="Reconcile the notes against the PDF folder")
+    ] = False,
+) -> None:
+    """The note↔PDF join, both directions.
+
+    The forward form prints the absolute path and nothing else, so it pipes and
+    can be handed straight to a reader.
+    """
+    papers_dir = _papers_dir()
+    records = _load(papers_dir)
+
+    if audit:
+        _print_audit(records, pdfs_dir=search.pdfs_dir_for(papers_dir))
+        return
+
+    if note is not None:
+        try:
+            owner = search.resolve_pdf(records, note)
+        except search.SearchError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+        typer.echo(owner.title)
+        typer.echo(
+            f"{owner.cite_key} · {owner.byline} · {_venue(owner)} "
+            f"{owner.year or 'n.d.'}"
+        )
+        typer.echo(f"note: {owner.path}")
+        return
+
+    if target is None:
+        typer.secho(
+            "Give a cite key, or --note <file.pdf>, or --audit.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    record = _resolve(records, target)
+    if record.pdf_path is None:
+        hint = (
+            f" Save it from a browser: {record.pdf_url}"
+            if record.pdf_url
+            else " No pdf_url recorded either."
+        )
+        # stderr, so the stdout contract stays "a path or nothing".
+        typer.secho(
+            f"{record.cite_key} has no PDF on disk.{hint}",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    typer.echo(str(record.pdf_path))
+
+
+def _print_audit(records: Sequence[search.Record], *, pdfs_dir: Path) -> None:
+    report = search.audit(records, pdfs_dir=pdfs_dir)
+    share = round(100 * report.with_pdf / report.total) if report.total else 0
+    without = report.total - report.with_pdf
+    typer.secho(
+        f"{report.total} notes · {report.with_pdf} with a PDF ({share}%) · "
+        f"{without} without",
+        fg=typer.colors.CYAN,
+    )
+    for label, names in (
+        ("orphan PDFs (no note claims them)", report.orphans),
+        ("notes claiming a PDF that is not on disk", report.missing),
+        ("PDFs on disk that no note claims", report.unclaimed),
+    ):
+        colour = typer.colors.GREEN if not names else typer.colors.YELLOW
+        typer.secho(f"{label + ':':<42}{len(names)}", fg=colour)
+        if names:
+            typer.echo(f"    {', '.join(names[:8])}")
+    colour = typer.colors.GREEN if not report.mismatched else typer.colors.YELLOW
+    typer.secho(
+        f"{'pdf link disagreeing with cite_key:':<42}{len(report.mismatched)}",
+        fg=colour,
+    )
+    for key, claimed in report.mismatched[:8]:
+        typer.echo(f"    {key} claims {claimed}")
+    typer.echo(
+        f"of the {without} without: {report.without_pdf_with_url} have a pdf_url "
+        f"recorded, {report.without_pdf_no_url} have none"
+    )
 
 
 if __name__ == "__main__":
