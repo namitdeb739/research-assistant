@@ -391,3 +391,56 @@ def test_render_body_adopts_a_hand_saved_pdf(tmp_path: Path) -> None:
     text = path.read_text(encoding="utf-8")
     assert vault.read_frontmatter(path)["pdf"] == "[[yen2023soil.pdf]]"
     assert text.endswith("## PDF\n\n![[yen2023soil.pdf]]\n")
+
+
+def test_a_fresh_note_is_not_read(tmp_path: Path) -> None:
+    """An abstract is not evidence: `tidy` backfills it from OpenAlex."""
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    sections = vault.parse_body(
+        vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    )
+
+    assert sections["Abstract"]
+    assert not vault.is_read(sections)
+    assert not vault.sync_read_tag(path, sections)
+    assert vault.READ_TAG not in vault.read_frontmatter(path)["tags"]
+
+
+@pytest.mark.parametrize("section", ["Key takeaway", "Notes"])
+def test_prose_of_your_own_marks_the_note_read(tmp_path: Path, section: str) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    sections = vault.parse_body(
+        vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    )
+    sections[section] = "Soil MFCs cannot hold a 3.3 V rail."
+
+    assert vault.is_read(sections)
+    assert vault.sync_read_tag(path, sections)
+    assert vault.read_frontmatter(path)["tags"] == ["paper", vault.READ_TAG]
+    # Derived, not asserted: re-running changes nothing.
+    assert not vault.sync_read_tag(path, sections)
+
+
+def test_emptying_the_note_retracts_the_tag(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    sections = vault.parse_body(
+        vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
+    )
+    vault.sync_read_tag(path, {**sections, "Notes": "A quote."})
+
+    assert vault.sync_read_tag(path, sections)
+    assert vault.read_frontmatter(path)["tags"] == ["paper"]
+
+
+def test_the_read_tag_leaves_the_body_and_other_tags_alone(tmp_path: Path) -> None:
+    path = vault.create_paper(
+        PAPER, "yen2023soil", papers_dir=tmp_path, tags=("paper", "seed", "topic/soil")
+    )
+    before = path.read_text(encoding="utf-8")
+    sections = vault.parse_body(vault._split_frontmatter(before)[1])
+    sections["Key takeaway"] = "Read through on the train."
+
+    assert vault.sync_read_tag(path, sections)
+    front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
+    assert front["tags"] == ["paper", "seed", "topic/soil", vault.READ_TAG]
+    assert body == vault._split_frontmatter(before)[1]

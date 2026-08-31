@@ -603,6 +603,10 @@ def tidy(
     sentence rather than a changed blank line. Section *content* is only ever
     reordered into the template, never rewritten, and headings the template does
     not know about are kept.
+
+    It also syncs the derived ``read`` tag across the vault, so
+    ``just find --tag read`` lists what has actually been read through rather
+    than merely collected.
     """
     papers_dir = _papers_dir()
     _, by_openalex = vault.index(papers_dir)
@@ -634,7 +638,7 @@ def tidy(
         else {}
     )
 
-    reformatted = adopted = unescaped = 0
+    reformatted = adopted = unescaped = retagged = 0
     for path in sorted(papers_dir.glob("*.md")):
         front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
         sections = vault.parse_body(body)
@@ -661,10 +665,15 @@ def tidy(
             adopted += 1
         if vault.write_body(path, vault.render_body(sections)):
             reformatted += 1
+        # The sweep is what backdates the tag: every note read before this
+        # existed already carries the prose it is derived from.
+        if vault.sync_read_tag(path, sections):
+            retagged += 1
 
     typer.secho(
         f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s); "
-        f"adopted {adopted} PDF(s); unescaped {unescaped} note(s).",
+        f"adopted {adopted} PDF(s); unescaped {unescaped} note(s); "
+        f"re-tagged {retagged} note(s) read/unread.",
         fg=typer.colors.GREEN,
     )
     orphans = sorted(
@@ -1104,6 +1113,7 @@ def _apply_grouping(
         prose, groups, pdf_name=_pdf_of(record).name
     )
     changed = vault.write_body(record.path, vault.render_body(sections))
+    vault.sync_read_tag(record.path, sections)
     count = sum(len(quotes) for _, quotes in groups)
     typer.secho(
         f"{'Wrote' if changed else 'Unchanged:'} {count} quote(s) under "

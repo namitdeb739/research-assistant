@@ -7,6 +7,9 @@ The frontmatter holds only *intrinsic* properties — facts about the resource
 itself. Judgements about it (is it any good, does it belong in related work) and
 progress through it (read yet?) are prose in the note body, not properties: a
 five-point scale in a table is a worse record of an opinion than a sentence is.
+The ``read`` tag is not a counter-example: nobody sets it, :func:`sync_read_tag`
+derives it from whether the body holds a takeaway or quotes, so it is a fact
+about the note rather than a claim someone has to keep true by hand.
 
 A note's *body* is written once and never rewritten: Obsidian owns it
 afterwards, and its property editor reformats frontmatter freely. Reading
@@ -63,6 +66,13 @@ _PDF_MAGIC = b"%PDF-"
 # a worse invitation to write than an empty one.
 BODY_SECTIONS = ("Key takeaway", "Abstract", "Notes")
 PDF_SECTION = "PDF"
+
+# A note counts as read once it holds something no index could have supplied: a
+# takeaway written by hand, or quotes recovered from its own highlights.
+# ``Abstract`` is deliberately not evidence — ``tidy`` backfills it from
+# OpenAlex without anyone having read a word.
+READ_SECTIONS = ("Key takeaway", "Notes")
+READ_TAG = "read"
 
 _HEADING = re.compile(r"^## (.+?)[ \t]*$", re.MULTILINE)
 
@@ -305,6 +315,30 @@ def write_topic_hub(
         encoding="utf-8",
     )
     return path
+
+
+def is_read(sections: Mapping[str, str]) -> bool:
+    """Whether a note body records having actually read the resource."""
+    return any((sections.get(name) or "").strip() for name in READ_SECTIONS)
+
+
+def sync_read_tag(path: Path, sections: Mapping[str, str]) -> bool:
+    """Add or drop the ``read`` tag to match the note's own prose.
+
+    The tag is *derived*, never asserted: it is a view of the body, so emptying
+    a note's takeaway and quotes retracts it again. That is what keeps it a fact
+    about the note rather than a status field somebody has to remember to
+    update, and so what lets it live in frontmatter at all.
+    """
+    tags = [str(tag) for tag in read_frontmatter(path).get("tags") or []]
+    if is_read(sections) == (READ_TAG in tags):
+        return False
+    updated = (
+        [*tags, READ_TAG]
+        if is_read(sections)
+        else [tag for tag in tags if tag != READ_TAG]
+    )
+    return update_frontmatter(path, {"tags": updated})
 
 
 def read_frontmatter(path: Path) -> dict[str, Any]:
