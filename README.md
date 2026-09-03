@@ -3,148 +3,145 @@
 Deterministic reference management for an Obsidian vault: Crossref/OpenAlex →
 one Markdown note per paper → BibTeX.
 
-There is **no model in the loop**. Every command is a pure function of the two
+```mermaid
+flowchart LR
+    IDX["Crossref<br/>OpenAlex"]
+    NOTES["papers/<br/>one note per paper"]
+    PDFS["pdfs/"]
+    TOPICS["topics/"]
+    BIB["refs.bib"]
+
+    IDX -- "paper · expand" --> NOTES
+    IDX -- "expand --pdfs" --> PDFS
+    PDFS -- "highlights" --> NOTES
+    NOTES -- "relink" --> TOPICS
+    NOTES -- "bib" --> BIB
+    NOTES -- "find · show · near" --> ANS["answers"]
+```
+
+**There is no model in the loop.** Every command is a pure function of the two
 public indexes and what is already on disk, so re-running one is idempotent and
 two people running it get the same vault. Nothing is ever summarised, invented,
 or paraphrased into your notes.
 
-## The store
-
-One Markdown note per paper in a folder of your choosing, open-access PDFs in a
-sibling `pdfs/`, and topic hub notes in a sibling `topics/`. The notes are the
-source of truth; the BibTeX file is generated from them.
-
-Frontmatter holds only **intrinsic** properties — facts about the resource. A
-judgement about it, or your progress through it, is prose under `## Notes`, never
-a property: a five-point scale in a table is a worse record of an opinion than a
-sentence is.
-
-The note format, not the Python, is the public API. It is specified in
-[`docs/note-format.md`](docs/note-format.md), and that is what the version number
-is a promise about.
+The notes are the source of truth; the BibTeX file is generated from them. The
+note format, not the Python, is the public API — it is specified in
+[`docs/note-format.md`](docs/note-format.md), and that is what the version
+number is a promise about.
 
 ## Install
 
-### The CLI
+Install both — the plugin drives the CLI.
+
+**The CLI:**
 
 ```bash
 uv tool install git+https://github.com/namitdeb739/research-assistant
 ```
 
-Inside a uv project that depends on it, the command is
-`uv run research-assistant`.
-
-### The Claude Code plugin
-
-Half of this is knowledge, not code: when to search rather than read, how to
-group quotes without ever touching their text, what the notes deliberately do
-not record. That ships from this same repo, versioned by the same tag, so the
-skills never describe a CLI you do not have.
+**The Claude Code plugin:**
 
 ```text
 /plugin marketplace add namitdeb739/research-assistant
 /plugin install research-assistant
 ```
 
-It adds two skills (`research-vault`, `highlights`), the `/lit` command, and a
-warn-only `PreToolUse` hook that nudges a `Read` or `grep` of the papers folder
-toward `find` and `show`. The hook is silent unless `VAULT_PAPERS_DIR` is set,
-so it stays out of the way in projects that have no vault.
+Inside a uv project that depends on it, the command is `uv run
+research-assistant`.
 
-The plugin drives the CLI, so install both.
-
-## Configuration
-
-Two environment variables, both optional as flags:
+Half of this is knowledge, not code: when to search rather than read, how to
+group quotes without touching their text, what the notes deliberately do not
+record. The plugin ships from this same repo, versioned by the same tag, so its
+skills never describe a CLI you do not have. It adds:
 
 | | |
 |---|---|
-| `VAULT_PAPERS_DIR` | The vault folder holding one note per paper. Also `--papers-dir`. There is no default: guessing at someone's folder layout is worse than saying so. |
-| `RESEARCH_ASSISTANT_USER_AGENT` | Your contact address, for the Crossref and OpenAlex polite pools — e.g. `myproject/1.0 (mailto:you@example.com)`. Unset means the anonymous pool, which is slower but works. |
+| Skills | `research-vault`, `highlights` |
+| Command | `/lit <topic>` — prior art, filtered against what you already have |
+| Hook | Warn-only `PreToolUse`: nudges a `Read` or `grep` of the papers folder toward `find` and `show`. Silent unless `VAULT_PAPERS_DIR` is set. |
+
+## Configuration
+
+| Variable | Flag | Meaning |
+|---|---|---|
+| `VAULT_PAPERS_DIR` | `--papers-dir` | The vault folder holding one note per paper. **No default** — guessing at someone's folder layout is worse than saying so. |
+| `RESEARCH_ASSISTANT_USER_AGENT` | — | Your contact address for the Crossref and OpenAlex polite pools, e.g. `myproject/1.0 (mailto:you@example.com)`. Unset means the anonymous pool: slower, but works. |
 
 ## Commands
 
+### Read — never writes
+
+| Command | Does | Notable flags |
+|---|---|---|
+| `find <query…>` | Ranked search, best match first | `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--limit` `--full` `--json` |
+| `show <target…>` | Whole notes, by cite key, note name or DOI | |
+| `near <target>` | What it cites, and what in the vault cites it | |
+| `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
+
+Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
+authors (×1) — no index, no embeddings. Terms are OR-ed and there is no
+stemmer, so `backscatter` does not match `backscattering`. With filters but no
+query, `find` lists the filtered set by citation count.
+
+`pdf` prints one absolute path on stdout and nothing else, so it pipes straight
+into a reader. `pdf --audit` reconciles what the notes claim against what is on
+disk — run it before making any coverage claim.
+
 ### Write
 
-```bash
-research-assistant paper 10.1145/3560905.3568538  # add one paper by DOI…
-research-assistant paper W2300484078              # …or by OpenAlex id
-research-assistant source --title "…" --author "…" --year 2026
-research-assistant expand --dry-run               # walk the citation graph
-research-assistant relink                         # rebuild links and topic hubs
-research-assistant tidy                           # reformat bodies, fill abstracts
-research-assistant bib --out refs.bib             # regenerate the bibliography
-```
+| Command | Does | Notable flags |
+|---|---|---|
+| `paper <doi\|openalex-id>` | Look one up and add it | `--force` |
+| `source` | Record what no index knows | `--title` `--author` `--year` `--venue` `--url` `--type` `--pdf` `--key` |
+| `expand` | Walk the citation graph one hop | `--dry-run` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
+| `relink` | Rebuild `cites` links and topic hubs | |
+| `tidy` | Reformat bodies, adopt PDFs, fill abstracts | `--abstracts`/`--no-abstracts` |
+| `bib --out <file>` | Regenerate the bibliography | |
 
-`paper` takes **a DOI or an OpenAlex id**, because a DOI is not universal —
-USENIX mints none. A DOI goes to Crossref first, which is authoritative for the
-fields a bibliography needs; an OpenAlex id falls back to that index alone.
-Deduplication checks both keys.
+Why they behave as they do:
 
-`source` is the escape hatch below both indexes: it records what you type, with
-no lookup at all. Crossref and OpenAlex cover journals and proceedings and
-nothing else, but a bibliography cites more than that — a slide deck, a vendor
-technical guide, a datasheet, a standard. Pass `--pdf` to file a local copy, and
-`--key` when the derived cite key reads badly (a corporate author has no
-surname). Such a note carries `doi: null` and `openalex_id: null`, so `expand`
-and `relink` cannot reach it from the citation graph — link it by hand.
-
-`expand` walks the graph one hop out from every note **not** tagged `harvested`,
-so re-running it never quietly reaches depth 2. To go deeper, drop that tag from
-the paper worth expanding.
-
-`relink` rewrites `cites` as wikilinks to notes that actually exist, and writes
-one topic hub note per theme. Links, not labels: a plain string groups a table
-fine but is not a node, so it never reaches the graph. A topic earns a hub only
-once several papers share it.
-
-`tidy` owns the note *body*: it renders every note through one template, fills
-any abstract the indexes have but the note lacks, and adopts any PDF in `pdfs/`
-whose filename matches a cite key. Section content is only ever moved, never
-rewritten, and headings the template does not know about are preserved.
-
-### Read
-
-```bash
-research-assistant find "intermittent computing checkpointing"
-research-assistant find "backscatter tag" --topic "Energy Harvesting"
-research-assistant show maioli2021alfred
-research-assistant near maioli2021alfred          # cited, and citing
-research-assistant pdf maioli2021alfred           # -> absolute path
-research-assistant highlights maioli2021alfred    # quotes under the highlights
-```
-
-`find` ranks by BM25 over title, topics, abstract and notes — no index, no
-embeddings. `pdf` is the note↔PDF join in both directions, and `pdf --audit`
-reconciles what the notes claim against what is on disk. The first four are
-strictly read-only.
+- **`paper` takes a DOI *or* an OpenAlex id,** because a DOI is not universal —
+  USENIX mints none. A DOI goes to Crossref first, authoritative for the fields
+  a bibliography needs; an OpenAlex id falls back to that index alone.
+  Deduplication checks both keys.
+- **`source` is the escape hatch below both indexes** — no lookup at all. The
+  indexes cover journals and proceedings; a bibliography cites a slide deck, a
+  vendor guide, a datasheet, a standard. Such a note carries `doi: null` and
+  `openalex_id: null`, so the citation graph cannot reach it. Link it by hand.
+- **`expand` walks out from every note *not* tagged `harvested`,** so re-running
+  it never quietly reaches depth 2. Drop that tag from the paper worth going
+  deeper on.
+- **`relink` writes links, not labels.** A plain string groups a table fine but
+  is not a node. A topic earns a hub only once several papers share it.
+- **`tidy` owns the note body** — see [what a tool may
+  overwrite](docs/note-format.md#what-a-tool-may-overwrite). Section content is
+  only moved, never rewritten; unknown headings are preserved.
 
 ### Highlights
 
-`highlights` recovers the text under the highlights you made in Obsidian's PDF
-viewer, which the annotation dictionary stores as **geometry only**: it
-intersects `/QuadPoints` with the page's characters, in quad-array order, because
-that is pdf.js's selection order and therefore reading order even across columns.
+Highlights made in Obsidian's PDF viewer live only in the annotation dictionary,
+as **geometry**. `highlights` recovers the text under them by intersecting
+`/QuadPoints` with the page's characters, in quad-array order — pdf.js's
+selection order, and therefore reading order even across columns.
+
+```bash
+research-assistant highlights <key> > quotes.json    # verbatim, no model
+research-assistant highlights <key> --apply groups.json
+research-assistant highlights --audit                # re-derive every quote
+research-assistant highlights --all                  # count them, vault-wide
+```
 
 **No quote is ever altered.** The only transformations are ligature expansion,
 NFC, line-break de-hyphenation and whitespace collapsing, applied identically by
 the writer and by `--audit` — so a typo in the source survives into your notes,
-which is the point.
-
-```bash
-research-assistant highlights <key> > quotes.json   # verbatim, no model
-research-assistant highlights <key> --apply groups.json
-research-assistant highlights --audit               # re-derive every quote
-```
-
-`--apply` addresses quotes by their `order` number, never by their text, so the
-write path is structurally incapable of rewriting one.
+which is the point. `--apply` addresses quotes by their `order` number, never by
+their text, so the write path is structurally incapable of rewriting one.
 
 ## Development
 
 ```bash
-just setup   # .venv + deps + pre-commit hooks
-just check   # lint + typecheck + test
+just setup       # .venv + deps + pre-commit hooks
+just check       # lint + typecheck + test
 just test-vault  # the tests that read a real vault
 ```
 
