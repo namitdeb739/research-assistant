@@ -20,7 +20,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from earth_computers.refs import vault
+from vaultref import vault
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence

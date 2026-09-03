@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING
 import pytest
 from fixtures.make_highlights_pdf import PAGE_ONE, PAGE_TWO, write
 
-from earth_computers.refs import highlights
+from vaultref import highlights
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

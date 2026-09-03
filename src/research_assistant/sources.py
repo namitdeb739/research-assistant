@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from earth_computers.refs.models import Paper
+from vaultref.models import Paper
 
 if TYPE_CHECKING:
     from collections.abc import Callable

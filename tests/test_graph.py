@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from earth_computers.refs import graph, sources
+from vaultref import graph, sources
 
 if TYPE_CHECKING:
     import httpx

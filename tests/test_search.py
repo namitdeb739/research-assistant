@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from earth_computers.refs import search
+from vaultref import search
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
-    from earth_computers.refs.models import Paper
+    from vaultref.models import Paper
 
 HEADER = (
     "% Generated from the Obsidian “Research Resources” notes "

@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from earth_computers.refs import vault
-from earth_computers.refs.models import Paper
+from vaultref import vault
+from vaultref.models import Paper
 
 if TYPE_CHECKING:
     from pathlib import Path
