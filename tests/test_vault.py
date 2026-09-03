@@ -4,8 +4,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from vaultref import vault
-from vaultref.models import Paper
+from research_assistant import vault
+from research_assistant.models import Paper
 
 if TYPE_CHECKING:
     from pathlib import Path

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 import httpx
 
-from vaultref.models import Paper
+from research_assistant.models import Paper
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -34,7 +34,7 @@ BACKOFF_SECONDS = 1.0
 # address must be the caller's own, so it comes from the environment rather than
 # being baked in: a shared literal would make everyone's traffic look like one
 # user's. Unset means no mailto, which is merely the anonymous pool, not an error.
-_USER_AGENT = os.getenv("VAULTREF_USER_AGENT", "vaultref/0.1")
+_USER_AGENT = os.getenv("RESEARCH_ASSISTANT_USER_AGENT", "research-assistant/0.1")
 
 _JATS_TAG = re.compile(r"<[^>]+>")
 _DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)", re.IGNORECASE)

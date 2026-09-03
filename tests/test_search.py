@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from vaultref import search
+from research_assistant import search
 
 if TYPE_CHECKING:
     from pathlib import Path

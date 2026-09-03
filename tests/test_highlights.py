@@ -20,7 +20,7 @@ from fixtures.make_highlights_pdf import PAGE_ONE, PAGE_TWO, write
 from pdfminer.pdfpage import PDFPage
 from pdfminer.pdftypes import resolve1
 
-from vaultref import highlights
+from research_assistant import highlights
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

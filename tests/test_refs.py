@@ -8,8 +8,8 @@ from __future__ import annotations
 
 import pytest
 
-from vaultref import bibtex, sources
-from vaultref.models import Paper
+from research_assistant import bibtex, sources
+from research_assistant.models import Paper
 
 ENTS = Paper(
     title="ENTS: Experiences in Co-Designed Environmental Sensing",

@@ -3,7 +3,7 @@
 Given the papers already in the vault, this finds the ones around them: what
 they cite, what cites them, and what OpenAlex considers related. Purely a
 discovery layer — it deals in OpenAlex work IDs and hands them to
-:mod:`vaultref.sources` for the authoritative Crossref record.
+:mod:`research_assistant.sources` for the authoritative Crossref record.
 
 Roots are every note *without* the ``harvested`` tag. That keeps a re-run
 idempotent: the papers a previous run added do not themselves become roots, so
@@ -27,8 +27,8 @@ OPENALEX_API = "https://api.openalex.org/works"
 
 # Crossref and OpenAlex both ask for a contact address for the polite pool. It
 # is the caller's to supply, so it comes from the environment: see the same
-# variable in :mod:`vaultref.sources`.
-_USER_AGENT = os.getenv("VAULTREF_USER_AGENT", "vaultref/0.1")
+# variable in :mod:`research_assistant.sources`.
+_USER_AGENT = os.getenv("RESEARCH_ASSISTANT_USER_AGENT", "research-assistant/0.1")
 
 # OpenAlex accepts an OR-joined filter of up to 50 ids per request.
 OPENALEX_MAX_IDS = 50

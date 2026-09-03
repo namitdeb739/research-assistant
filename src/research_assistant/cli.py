@@ -14,8 +14,8 @@ from typing import TYPE_CHECKING, Annotated, Any
 import httpx
 import typer
 
-from vaultref import bibtex, graph, highlights, search, sources, vault
-from vaultref.models import Paper
+from research_assistant import bibtex, graph, highlights, search, sources, vault
+from research_assistant.models import Paper
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
