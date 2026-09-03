@@ -1,4 +1,4 @@
-"""``just paper`` and ``just bib`` — deterministic reference management."""
+"""Deterministic reference management: Crossref/OpenAlex to Obsidian to BibTeX."""
 
 from __future__ import annotations
 
@@ -397,7 +397,7 @@ def expand(
             f"{len(no_pdf)} had no fetchable PDF — see the 'Missing PDF' view.",
             fg=typer.colors.YELLOW,
         )
-    typer.echo("Now run: just relink")
+    typer.echo("Now run the `relink` command.")
 
 
 def _subfields_of(front: dict[str, Any]) -> tuple[str, ...]:
@@ -522,7 +522,7 @@ def relink() -> None:
     _, by_openalex = vault.index(papers_dir)
     if not by_openalex:
         typer.secho(
-            "No note carries an openalex_id yet — run `just expand` first.",
+            "No note carries an openalex_id yet — run `expand` first.",
             fg=typer.colors.YELLOW,
         )
         raise typer.Exit(0)
@@ -585,7 +585,7 @@ def relink() -> None:
 def _backfill_openalex_ids(papers_dir: Path) -> int:
     """Give every note with a DOI its OpenAlex id, so the linker can see it.
 
-    ``just paper`` records only what Crossref returns, so a note added by hand
+    ``paper`` records only what Crossref returns, so a note added by hand
     carries no ``openalex_id`` and would silently sit outside the citation
     graph. Doing this here rather than in ``paper`` keeps the single-paper path
     free of a second lookup, and repairs notes added before this existed.
@@ -630,7 +630,7 @@ def tidy(
     not know about are kept.
 
     It also syncs the derived ``read`` tag across the vault, so
-    ``just find --tag read`` lists what has actually been read through rather
+    ``find --tag read`` lists what has actually been read through rather
     than merely collected.
     """
     papers_dir = _papers_dir()
@@ -1018,7 +1018,7 @@ def _notes_section(record: search.Record) -> str:
     if "Notes" not in record.sections:
         typer.secho(
             f"{record.cite_key}: the note has no `## Notes` heading. "
-            "Run `just tidy` first \u2014 this will not synthesise the section.",
+            "Run `tidy` first \u2014 this will not synthesise the section.",
             fg=typer.colors.RED,
             err=True,
         )

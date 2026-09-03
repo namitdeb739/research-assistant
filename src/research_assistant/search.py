@@ -568,7 +568,7 @@ def resolve_pdf(records: Sequence[Record], target: str) -> Record:
         names = ", ".join(sorted(r.cite_key for r in owners))
         raise SearchError(f"{target!r} is claimed by {len(owners)} notes: {names}")
     # No note claims it; the cite key convention is the fallback, and a hit here
-    # means the note simply has not adopted the file yet (`just tidy` does that).
+    # means the note simply has not adopted the file yet (`tidy` does that).
     return resolve(records, stem)
 
 

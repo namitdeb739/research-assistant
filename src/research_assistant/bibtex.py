@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 HEADER = (
     "% Generated from the Obsidian “Research Resources” notes "
     "— do not hand-edit.\n"
-    "% Regenerate with: just bib\n"
+    "% Regenerate with the `bib` command.\n"
 )
 
 # Characters that would otherwise start a LaTeX command or group.
