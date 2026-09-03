@@ -13,15 +13,12 @@ from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
 import typer
-from dotenv import load_dotenv
 
 from earth_computers.refs import bibtex, graph, highlights, search, sources, vault
 from earth_computers.refs.models import Paper
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
-load_dotenv()
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
