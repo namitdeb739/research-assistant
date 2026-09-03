@@ -31,10 +31,6 @@ open_access: null
 {tags}
 ---
 
-## Key takeaway
-
-{takeaway}
-
 ## Abstract
 
 {abstract}
@@ -56,7 +52,6 @@ def write_note(
     doi: str | None = None,
     citations: int | None = 10,
     abstract: str = "",
-    takeaway: str = "",
     topics: tuple[str, ...] = (),
     cites: tuple[str, ...] = (),
     tags: tuple[str, ...] = ("paper",),
@@ -89,7 +84,6 @@ def write_note(
             cites=block("cites", cites, link=True),
             tags=block("tags", tags),
             abstract=abstract,
-            takeaway=takeaway,
         ),
         encoding="utf-8",
     )

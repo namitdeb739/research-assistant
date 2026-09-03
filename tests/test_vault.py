@@ -304,16 +304,14 @@ def test_write_topic_hub_regenerates_wholesale(tmp_path: Path) -> None:
 def test_render_body_puts_one_blank_line_after_every_heading() -> None:
     body = vault.render_body({"Abstract": "Soil powers sensing."})
 
-    assert body == (
-        "## Key takeaway\n\n## Abstract\n\nSoil powers sensing.\n\n## Notes\n"
-    )
+    assert body == "## Abstract\n\nSoil powers sensing.\n\n## Notes\n"
 
 
 def test_render_body_omits_only_the_pdf_section_when_empty() -> None:
-    """The other three are prompts: a missing heading invites writing less."""
+    """The other two are prompts: a missing heading invites writing less."""
     body = vault.render_body({})
 
-    assert body == "## Key takeaway\n\n## Abstract\n\n## Notes\n"
+    assert body == "## Abstract\n\n## Notes\n"
     assert "## PDF" not in body
 
 
@@ -339,7 +337,10 @@ def test_render_body_is_idempotent_over_the_legacy_shapes() -> None:
     once = [vault.render_body(vault.parse_body(b)) for b in legacy]
 
     assert all(vault.render_body(vault.parse_body(b)) == b for b in once)
-    assert once[0] == "## Key takeaway\n\n## Abstract\n\nA\n\n## Notes\n"
+    # ``Key takeaway`` was a template section until it was dropped. Every legacy
+    # note carries the empty heading, and this is the migration: unknown and
+    # empty, it renders as nothing at all.
+    assert once[0] == "## Abstract\n\nA\n\n## Notes\n"
 
 
 def test_parse_body_keeps_a_hand_written_section(tmp_path: Path) -> None:
@@ -348,7 +349,10 @@ def test_parse_body_keeps_a_hand_written_section(tmp_path: Path) -> None:
     rendered = vault.render_body(vault.parse_body(body))
 
     assert "## My thoughts\n\nKeep me" in rendered
-    assert "Mine" in rendered
+    # ``Key takeaway`` is no longer a template section, but one carrying prose is
+    # a hand-written section like any other: dropping the heading must never
+    # drop what somebody wrote under it.
+    assert "## Key takeaway\n\nMine" in rendered
 
 
 def test_write_body_leaves_frontmatter_byte_for_byte(tmp_path: Path) -> None:
@@ -406,13 +410,12 @@ def test_a_fresh_note_is_not_read(tmp_path: Path) -> None:
     assert vault.READ_TAG not in vault.read_frontmatter(path)["tags"]
 
 
-@pytest.mark.parametrize("section", ["Key takeaway", "Notes"])
-def test_prose_of_your_own_marks_the_note_read(tmp_path: Path, section: str) -> None:
+def test_prose_of_your_own_marks_the_note_read(tmp_path: Path) -> None:
     path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
     sections = vault.parse_body(
         vault._split_frontmatter(path.read_text(encoding="utf-8"))[1]
     )
-    sections[section] = "Soil MFCs cannot hold a 3.3 V rail."
+    sections["Notes"] = "Soil MFCs cannot hold a 3.3 V rail."
 
     assert vault.is_read(sections)
     assert vault.sync_read_tag(path, sections)
@@ -438,7 +441,7 @@ def test_the_read_tag_leaves_the_body_and_other_tags_alone(tmp_path: Path) -> No
     )
     before = path.read_text(encoding="utf-8")
     sections = vault.parse_body(vault._split_frontmatter(before)[1])
-    sections["Key takeaway"] = "Read through on the train."
+    sections["Notes"] = "Read through on the train."
 
     assert vault.sync_read_tag(path, sections)
     front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))

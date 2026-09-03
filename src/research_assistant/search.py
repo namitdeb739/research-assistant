@@ -161,12 +161,11 @@ _STOPWORDS = frozenset(
 
 # Where a term is found matters as much as how often. A title is the author's
 # own one-line summary of the paper, so a hit there is worth several in the
-# body; a hit in the hand-written takeaway is worth as much, because it is the
-# only prose in the vault that is not the publisher's.
+# body; ``notes`` is weighted with the abstract rather than above it because it
+# holds extracted quotes as often as prose of your own.
 WEIGHTS: dict[str, float] = {
     "title": 3.0,
     "topics": 2.0,
-    "takeaway": 2.0,
     "abstract": 1.0,
     "notes": 1.0,
     "venue": 1.0,
@@ -341,7 +340,6 @@ def fields(record: Record) -> dict[str, str]:
     return {
         "title": record.title,
         "topics": " ".join(record.topics),
-        "takeaway": record.sections.get("Key takeaway", ""),
         "abstract": record.sections.get("Abstract", ""),
         "notes": record.sections.get("Notes", ""),
         "venue": record.venue or "",
@@ -410,7 +408,7 @@ def best_snippet(record: Record, terms: Sequence[str]) -> tuple[str, str]:
     """
     wanted = set(terms)
     texts = fields(record)
-    for name in ("takeaway", "abstract", "notes", "topics", "venue", "title"):
+    for name in ("abstract", "notes", "topics", "venue", "title"):
         if not texts[name]:
             continue
         if (window := _densest(texts[name], wanted)) is not None:

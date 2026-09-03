@@ -15,9 +15,9 @@ sibling `pdfs/`, and topic hub notes in a sibling `topics/`. The notes are the
 source of truth; the BibTeX file is generated from them.
 
 Frontmatter holds only **intrinsic** properties — facts about the resource. A
-judgement about it, or your progress through it, is prose under `## Key takeaway`
-and `## Notes`, never a property: a five-point scale in a table is a worse record
-of an opinion than a sentence is.
+judgement about it, or your progress through it, is prose under `## Notes`, never
+a property: a five-point scale in a table is a worse record of an opinion than a
+sentence is.
 
 The note format, not the Python, is the public API. It is specified in
 [`docs/note-format.md`](docs/note-format.md), and that is what the version number
@@ -93,7 +93,7 @@ research-assistant pdf maioli2021alfred           # -> absolute path
 research-assistant highlights maioli2021alfred    # quotes under the highlights
 ```
 
-`find` ranks by BM25 over title, topics, takeaway and abstract — no index, no
+`find` ranks by BM25 over title, topics, abstract and notes — no index, no
 embeddings. `pdf` is the note↔PDF join in both directions, and `pdf --audit`
 reconciles what the notes claim against what is on disk. The first four are
 strictly read-only.

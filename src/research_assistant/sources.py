@@ -2,8 +2,8 @@
 
 No model in the loop: given a DOI or an OpenAlex id, the same record comes back
 every time.
-Judgement fields (Relevance, Topics, Section, Key Takeaway, Rating) are left
-empty on purpose — those are yours to fill in Obsidian.
+The note's prose is left empty on purpose — a judgement about a paper is yours
+to write in Obsidian, and no index has one to give.
 """
 
 from __future__ import annotations

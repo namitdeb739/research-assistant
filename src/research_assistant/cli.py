@@ -127,7 +127,7 @@ def paper(
             raise typer.Exit(1) from exc
 
     typer.secho(f"Added: {path}", fg=typer.colors.GREEN)
-    typer.echo("Write the key takeaway and topics in Obsidian.")
+    typer.echo("Write your notes and topics in Obsidian.")
 
 
 @app.command()
@@ -198,7 +198,7 @@ def source(
         raise typer.Exit(1) from exc
 
     typer.secho(f"Added: {path}", fg=typer.colors.GREEN)
-    typer.echo("Write the key takeaway and topics in Obsidian.")
+    typer.echo("Write your notes and topics in Obsidian.")
 
 
 def _save_pdf(

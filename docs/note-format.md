@@ -62,10 +62,11 @@ graph walk added, `seed` a note it expanded from — together they are what keep
 `expand` from quietly reaching depth 2 on a re-run.
 
 `read` is the second exception to the intrinsic rule, and only because nobody
-sets it by hand: it is **derived** from whether the body holds a takeaway or
-quotes of your own, so it states a fact about the note rather than a claim you
-have to keep true. Empty those sections and it comes off again. An abstract does
-not count — those are backfilled from OpenAlex without anyone reading a word.
+sets it by hand: it is **derived** from whether `## Notes` holds anything — prose
+of your own, or quotes recovered from the PDF — so it states a fact about the
+note rather than a claim you have to keep true. Empty that section and it comes
+off again. An abstract does not count: those are backfilled from OpenAlex
+without anyone reading a word.
 
 ### Reverse links
 
@@ -74,17 +75,19 @@ and a second copy of a relation is a second thing to keep in sync.
 
 ## Body
 
-Four `##` sections, in this order, any of which may be empty:
+Three `##` sections, in this order, any of which may be empty:
 
 ```markdown
-## Key takeaway
-
 ## Abstract
 
 ## Notes
 
 ## PDF
 ```
+
+`## Key takeaway` was a fourth section until 0.2.0. It is now an ordinary
+hand-written heading: `tidy` drops it where it is empty — which is the migration
+— and preserves it wherever somebody actually wrote under it.
 
 `## PDF` holds the embed and goes last: a rendered PDF is tall and the notes
 matter more. Headings not in this list are **preserved** — the renderer moves

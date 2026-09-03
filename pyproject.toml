@@ -1,6 +1,6 @@
 [project]
 name = "research-assistant"
-version = "0.1.0"
+version = "0.2.0"
 description = "Deterministic reference management: Crossref/OpenAlex to Obsidian to BibTeX"
 readme = "README.md"
 license = "MIT"

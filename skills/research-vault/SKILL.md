@@ -25,8 +25,8 @@ research-assistant near maioli2021alfred                        # graph neighbou
 research-assistant pdf maioli2021alfred                         # -> absolute path
 ```
 
-Ranking is BM25 over title (×3), topics (×2), the hand-written takeaway (×2),
-and abstract, notes, venue and authors (×1). Deterministic, no index, no model.
+Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
+authors (×1). Deterministic, no index, no model.
 
 ## Query technique
 
@@ -79,8 +79,8 @@ the abstract alone — never imply the full text was consulted. Run
 
 ## What the vault does and does not know
 
-- `## Key takeaway` is empty unless somebody wrote it. Most corpora are
-  publisher abstracts, not opinions. `find` answers "what is in this
+- `## Notes` is empty unless somebody wrote it or ran `highlights`. Most corpora
+  are publisher abstracts, not opinions. `find` answers "what is in this
   literature", never "what did you think of it" — do not present one as the
   other.
 - Frontmatter holds only **intrinsic** properties. Do not propose adding a
