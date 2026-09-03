@@ -17,6 +17,8 @@ from typing import TYPE_CHECKING
 
 import pytest
 from fixtures.make_highlights_pdf import PAGE_ONE, PAGE_TWO, write
+from pdfminer.pdfpage import PDFPage
+from pdfminer.pdftypes import resolve1
 
 from vaultref import highlights
 
@@ -270,17 +272,56 @@ def yen() -> list[highlights.Highlight]:
     return found
 
 
+def _annotated_highlights(path: Path) -> int:
+    """``/Highlight`` annotations in the file, counted without the extractor.
+
+    Deliberately a second, dumber reading of the same PDF: comparing the
+    extractor against itself would prove nothing.
+    """
+    with path.open("rb") as handle:
+        return sum(
+            1
+            for page in PDFPage.get_pages(handle)
+            if isinstance(annots := resolve1(page.annots), list)
+            for annot in annots
+            if isinstance(resolved := resolve1(annot), dict)
+            and highlights._name(resolved.get("Subtype")) == "Highlight"
+        )
+
+
 @pytest.mark.vault
-def test_the_yen_paper_has_eighty_extractable_highlights() -> None:
+def test_no_highlight_is_silently_lost() -> None:
+    """Every annotation is either extracted or skipped with a stated reason.
+
+    The count itself is not asserted: highlights are added by reading, so a
+    literal was a test of how much had been read on the day it was written and
+    failed on the next paper. What must hold is that nothing disappears in
+    between — the failure the geometry code would actually produce.
+    """
     path = yen_pdf()
     if not path.is_file():
         pytest.skip(f"{path} is not on this machine")
     found, skipped = highlights.extract(path)
-    assert len(found) == 80
-    assert [(s.page, s.reason) for s in skipped] == [
-        (7, highlights.FREE_DRAW),
-        (15, highlights.FREE_DRAW),
-    ]
+
+    assert len(found) + len(skipped) == _annotated_highlights(path)
+    # Contiguous from 1: `order` is the identity --apply addresses quotes by.
+    assert [h.order for h in found] == list(range(1, len(found) + 1))
+
+
+@pytest.mark.vault
+def test_only_free_draw_is_skipped() -> None:
+    """A quad-bearing highlight yielding no text means the intersection broke.
+
+    Free-draw annotations carry no ``/QuadPoints`` and are genuinely
+    unrecoverable; ``NO_TEXT`` is a bug, so the reason is asserted rather than
+    which pages happen to carry one.
+    """
+    path = yen_pdf()
+    if not path.is_file():
+        pytest.skip(f"{path} is not on this machine")
+    _, skipped = highlights.extract(path)
+
+    assert {s.reason for s in skipped} <= {highlights.FREE_DRAW}
 
 
 @pytest.mark.vault
