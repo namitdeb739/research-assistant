@@ -11,7 +11,6 @@ import httpx
 import typer
 from dotenv import load_dotenv
 
-from earth_computers.config import Config
 from earth_computers.refs import bibtex, graph, highlights, search, sources, vault
 from earth_computers.refs.models import Paper
 
@@ -24,10 +23,37 @@ app = typer.Typer(add_completion=False, help=__doc__)
 
 DEFAULT_BIB = Path("thesis/refs.bib")
 
+# Set once by the callback below, before any command body runs. There is no
+# default: the vault lives outside this tree and guessing at someone's folder
+# layout is worse than saying so.
+_PAPERS_DIR: Path | None = None
+
+
+@app.callback()
+def _main(
+    papers_dir: Annotated[
+        Path | None,
+        typer.Option(
+            "--papers-dir",
+            envvar="VAULT_PAPERS_DIR",
+            help="The vault folder holding one note per paper.",
+        ),
+    ] = None,
+) -> None:
+    global _PAPERS_DIR
+    _PAPERS_DIR = papers_dir
+
 
 def _papers_dir() -> Path:
     """The vault folder holding one note per paper."""
-    return Path(Config().vault_papers_dir)
+    if _PAPERS_DIR is None:
+        typer.secho(
+            "No papers folder: pass --papers-dir or set VAULT_PAPERS_DIR.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    return _PAPERS_DIR.expanduser()
 
 
 def _describe(record: Paper) -> None:

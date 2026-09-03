@@ -9,6 +9,7 @@ empty on purpose — those are yours to fill in Obsidian.
 from __future__ import annotations
 
 import html
+import os
 import re
 import time
 from typing import TYPE_CHECKING, Any
@@ -29,8 +30,11 @@ RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_ATTEMPTS = 4
 BACKOFF_SECONDS = 1.0
 
-# Crossref asks for a contact address in the User-Agent for the polite pool.
-_USER_AGENT = "earth-computers/0.1 (mailto:namitdeb739@gmail.com)"
+# Crossref asks for a contact address in the User-Agent for the polite pool. The
+# address must be the caller's own, so it comes from the environment rather than
+# being baked in: a shared literal would make everyone's traffic look like one
+# user's. Unset means no mailto, which is merely the anonymous pool, not an error.
+_USER_AGENT = os.getenv("VAULTREF_USER_AGENT", "vaultref/0.1")
 
 _JATS_TAG = re.compile(r"<[^>]+>")
 _DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)", re.IGNORECASE)

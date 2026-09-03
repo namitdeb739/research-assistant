@@ -13,6 +13,7 @@ the graph never quietly walks out to depth 2. To push further, drop the
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -24,8 +25,10 @@ if TYPE_CHECKING:
 
 OPENALEX_API = "https://api.openalex.org/works"
 
-# Crossref and OpenAlex both ask for a contact address for the polite pool.
-_USER_AGENT = "earth-computers/0.1 (mailto:namitdeb739@gmail.com)"
+# Crossref and OpenAlex both ask for a contact address for the polite pool. It
+# is the caller's to supply, so it comes from the environment: see the same
+# variable in :mod:`earth_computers.refs.sources`.
+_USER_AGENT = os.getenv("VAULTREF_USER_AGENT", "vaultref/0.1")
 
 # OpenAlex accepts an OR-joined filter of up to 50 ids per request.
 OPENALEX_MAX_IDS = 50
