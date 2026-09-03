@@ -2,8 +2,8 @@
 
 No model in the loop: given a DOI or an OpenAlex id, the same record comes back
 every time.
-The note's prose is left empty on purpose — a judgement about a paper is yours
-to write in Obsidian, and no index has one to give.
+The note's prose is left empty on purpose. A judgement about a paper is yours to
+write in Obsidian, and no index has one to give.
 """
 
 from __future__ import annotations
@@ -140,8 +140,8 @@ def get_with_retry(
 ) -> httpx.Response:
     """GET ``url``, retrying on rate limits and transient server errors.
 
-    Returns the last response either way — the caller still decides what a 404
-    or a 500 means, so nothing is swallowed here.
+    Returns the last response either way, because the caller still decides what
+    a 404 or a 500 means and nothing is swallowed here.
     """
     response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
     for attempt in range(MAX_ATTEMPTS - 1):
@@ -329,8 +329,8 @@ def _openalex_landing_page(work: dict[str, Any]) -> str | None:
 def paper_from_openalex(work: dict[str, Any]) -> Paper:
     """Build a :class:`Paper` from OpenAlex alone.
 
-    The fallback for the handful of works Crossref 404s on but OpenAlex knows —
-    a note with slightly scrappier metadata beats losing the paper entirely.
+    The fallback for the handful of works Crossref 404s on but OpenAlex knows: a
+    note with slightly scrappier metadata beats losing the paper entirely.
     """
     title = work.get("title") or work.get("display_name") or "Untitled"
     doi = work.get("doi")
@@ -398,7 +398,7 @@ def resolve_source(
 
     A DOI still goes to Crossref first, because Crossref is authoritative for
     the fields the bibliography needs. An OpenAlex id is the way in for the
-    works Crossref cannot know about — USENIX proceedings mint no DOI, so
+    works Crossref cannot know about. USENIX proceedings mint no DOI, so
     ``W2300484078`` is the only identifier Passive Wi-Fi has.
     """
     ident = as_openalex_id(raw)

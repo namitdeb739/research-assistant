@@ -2,7 +2,7 @@
 
 Given the papers already in the vault, this finds the ones around them: what
 they cite, what cites them, and what OpenAlex considers related. Purely a
-discovery layer — it deals in OpenAlex work IDs and hands them to
+discovery layer: it deals in OpenAlex work IDs and hands them to
 :mod:`research_assistant.sources` for the authoritative Crossref record.
 
 Roots are every note *without* the ``harvested`` tag. That keeps a re-run
@@ -191,7 +191,7 @@ def topics_of(work: dict[str, Any]) -> tuple[tuple[str, ...], tuple[str, ...]]:
     """Return ``(topic names, subfield slugs)`` for a work.
 
     OpenAlex assigns these itself, so the grouping is deterministic and carries
-    no judgement — the same distinction the vault draws between ``topics`` and
+    no judgement, the same distinction the vault draws between ``topics`` and
     the prose sections of a note.
     """
     raw = work.get("topics")

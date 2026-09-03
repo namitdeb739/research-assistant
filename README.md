@@ -1,7 +1,7 @@
 # research-assistant
 
-Deterministic reference management for an Obsidian vault: Crossref/OpenAlex →
-one Markdown note per paper → BibTeX.
+Reference management for an Obsidian vault: Crossref/OpenAlex → one Markdown
+note per paper → BibTeX.
 
 ```mermaid
 flowchart LR
@@ -19,19 +19,22 @@ flowchart LR
     NOTES -- "find · show · near" --> ANS["answers"]
 ```
 
-**There is no model in the loop.** Every command is a pure function of the two
-public indexes and what is already on disk, so re-running one is idempotent and
-two people running it get the same vault. Nothing is ever summarised, invented,
-or paraphrased into your notes.
+**The only bytes a model writes into a note are the `### ` headings over your
+highlight groups.** Everything else is a pure function of the two public indexes
+and what is already on disk, so re-running a command is idempotent and two people
+running it get the same vault. No abstract is summarised, no quote paraphrased,
+no field invented. Where a model does decide something, it decides which quotes
+belong together and what to call the group, never a word of the quotes
+themselves.
 
 The notes are the source of truth; the BibTeX file is generated from them. The
-note format, not the Python, is the public API — it is specified in
+note format, not the Python, is the public API. It is specified in
 [`docs/note-format.md`](docs/note-format.md), and that is what the version
 number is a promise about.
 
 ## Install
 
-Install both — the plugin drives the CLI.
+Install both: the plugin drives the CLI.
 
 **The CLI:**
 
@@ -57,19 +60,19 @@ skills never describe a CLI you do not have. It adds:
 | | |
 |---|---|
 | Skills | `research-vault`, `highlights` |
-| Command | `/lit <topic>` — prior art, filtered against what you already have |
+| Command | `/lit <topic>`: prior art, filtered against what you already have |
 | Hook | Warn-only `PreToolUse`: nudges a `Read` or `grep` of the papers folder toward `find` and `show`. Silent unless `VAULT_PAPERS_DIR` is set. |
 
 ## Configuration
 
 | Variable | Flag | Meaning |
 |---|---|---|
-| `VAULT_PAPERS_DIR` | `--papers-dir` | The vault folder holding one note per paper. **No default** — guessing at someone's folder layout is worse than saying so. |
+| `VAULT_PAPERS_DIR` | `--papers-dir` | The vault folder holding one note per paper. **No default**, because guessing at someone's folder layout is worse than saying so. |
 | `RESEARCH_ASSISTANT_USER_AGENT` | — | Your contact address for the Crossref and OpenAlex polite pools, e.g. `myproject/1.0 (mailto:you@example.com)`. Unset means the anonymous pool: slower, but works. |
 
 ## Commands
 
-### Read — never writes
+### Read (never writes)
 
 | Command | Does | Notable flags |
 |---|---|---|
@@ -79,13 +82,13 @@ skills never describe a CLI you do not have. It adds:
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
-authors (×1) — no index, no embeddings. Terms are OR-ed and there is no
-stemmer, so `backscatter` does not match `backscattering`. With filters but no
+authors (×1). No index, no embeddings. Terms are OR-ed and there is no stemmer,
+so `backscatter` does not match `backscattering`. With filters but no
 query, `find` lists the filtered set by citation count.
 
 `pdf` prints one absolute path on stdout and nothing else, so it pipes straight
 into a reader. `pdf --audit` reconciles what the notes claim against what is on
-disk — run it before making any coverage claim.
+disk. Run it before making any coverage claim.
 
 ### Write
 
@@ -100,11 +103,11 @@ disk — run it before making any coverage claim.
 
 Why they behave as they do:
 
-- **`paper` takes a DOI *or* an OpenAlex id,** because a DOI is not universal —
+- **`paper` takes a DOI *or* an OpenAlex id,** because a DOI is not universal:
   USENIX mints none. A DOI goes to Crossref first, authoritative for the fields
   a bibliography needs; an OpenAlex id falls back to that index alone.
   Deduplication checks both keys.
-- **`source` is the escape hatch below both indexes** — no lookup at all. The
+- **`source` is the escape hatch below both indexes**, with no lookup at all. The
   indexes cover journals and proceedings; a bibliography cites a slide deck, a
   vendor guide, a datasheet, a standard. Such a note carries `doi: null` and
   `openalex_id: null`, so the citation graph cannot reach it. Link it by hand.
@@ -113,7 +116,7 @@ Why they behave as they do:
   deeper on.
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
-- **`tidy` owns the note body** — see [what a tool may
+- **`tidy` owns the note body.** See [what a tool may
   overwrite](docs/note-format.md#what-a-tool-may-overwrite). Section content is
   only moved, never rewritten; unknown headings are preserved.
 
@@ -121,19 +124,38 @@ Why they behave as they do:
 
 Highlights made in Obsidian's PDF viewer live only in the annotation dictionary,
 as **geometry**. `highlights` recovers the text under them by intersecting
-`/QuadPoints` with the page's characters, in quad-array order — pdf.js's
-selection order, and therefore reading order even across columns.
+`/QuadPoints` with the page's characters, in quad-array order, which is pdf.js's
+selection order and therefore reading order even across columns.
 
 ```bash
 research-assistant highlights <key> > quotes.json    # verbatim, no model
+research-assistant highlights <key> --apply groups.json --dry-run
 research-assistant highlights <key> --apply groups.json
 research-assistant highlights --audit                # re-derive every quote
 research-assistant highlights --all                  # count them, vault-wide
 ```
 
+Sorting the quotes into groups and naming those groups is the one job left to a
+model, and it is the one place the output is not reproducible. Two guardrails
+bound what a re-run can change: a grouping cannot move a quote the note has
+already placed (that needs `--regroup`), and it cannot be one heading per quote.
+So a second pass only decides where the *new* highlights land.
+
+To measure a grouper rather than argue about it, every note you have already
+grouped is a case to test against:
+
+```bash
+research-assistant highlights <key> --gold > gold.json   # the note's own grouping
+research-assistant highlights <key> --score cand.json    # ARI, homogeneity, …
+```
+
+The scores read only the partition, never a heading's wording, so a rename is
+free; homogeneity and completeness separate a heading that mixes two ideas from
+one idea spread over two headings.
+
 **No quote is ever altered.** The only transformations are ligature expansion,
 NFC, line-break de-hyphenation and whitespace collapsing, applied identically by
-the writer and by `--audit` — so a typo in the source survives into your notes,
+the writer and by `--audit`, so a typo in the source survives into your notes,
 which is the point. `--apply` addresses quotes by their `order` number, never by
 their text, so the write path is structurally incapable of rewriting one.
 

@@ -10,7 +10,7 @@ Two conditions from the real corpus are reproduced deliberately:
   exactly as LaTeX sets a justified line. Word spacing must therefore be
   recovered from the gaps, which is what broke ``extract_words()``.
 * **Several quads per line, with unequal tops.** Sorting quad fragments by their
-  top then scrambles the word order within a line — the failure that produced
+  top then scrambles the word order within a line, the failure that produced
   ``an over boost in the number of operations each system``.
 
 The font declares a uniform 500/1000 width, so every glyph advances exactly half
@@ -58,7 +58,7 @@ def _line(words: str, x: float, baseline: float) -> list[Word]:
 def _quad(word: Word, index: int) -> list[float]:
     """The quad covering one word, as ``x1 y1 x2 y2 x3 y3 x4 y4``.
 
-    Alternate words sit 1.5pt taller. The glyphs do not move — only the quad —
+    Alternate words sit 1.5pt taller. The glyphs do not move, only the quad,
     which is what makes sorting fragments by their top scramble a line.
     """
     top = word.baseline + ASCENT + (1.5 if index % 2 else 0.0)
@@ -87,7 +87,7 @@ def _highlight(words: list[Word]) -> str:
 
 def build() -> bytes:
     """The whole PDF: two pages, two selection highlights, one free-draw."""
-    # Page 1 — one column, one highlight spanning two lines. `ignored` sits on
+    # Page 1: one column, one highlight spanning two lines. `ignored` sits on
     # the second line but outside every quad, so it proves the char selection
     # stops at the highlight's boundary rather than taking the whole line.
     first = _line("Solar panels are prone to", 80, 700)
@@ -95,7 +95,7 @@ def build() -> bytes:
     page_one_words = first + second
     page_one_quads = first + second[:3]
 
-    # Page 2 — two columns, one highlight running from the foot of the left
+    # Page 2: two columns, one highlight running from the foot of the left
     # column into the head of the right. Its quads are in reading order, but the
     # right column's are 20pt *higher* on the page, so anything that sorts by
     # position emits the columns the wrong way round.

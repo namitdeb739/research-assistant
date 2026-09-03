@@ -1,4 +1,4 @@
-"""Ranked search over the paper notes — the read side of the vault.
+"""Ranked search over the paper notes: the read side of the vault.
 
 The corpus is 177 notes and a third of a megabyte of prose, which is too much to
 read whole and too varied for a substring grep: a query for "intermittent
@@ -6,7 +6,7 @@ computing" should reach Mementos through its abstract, not just the two notes
 with the words in their title.
 
 So this ranks. BM25 over a weighted bag of words per note, with no index, no
-embedding and no model in the loop — the same standard the rest of the refs
+embedding and no model in the loop, the same standard the rest of the refs
 tooling holds itself to. A full pass over the vault costs a few tens of
 milliseconds, which is cheaper than keeping an index honest.
 
@@ -173,7 +173,7 @@ WEIGHTS: dict[str, float] = {
 }
 
 # Standard BM25 constants. k1 damps runaway term frequency, b scales the
-# length normalisation — an abstract should not outrank a title for being long.
+# length normalisation, so an abstract does not outrank a title for being long.
 K1 = 1.5
 B = 0.75
 
@@ -222,7 +222,7 @@ class Record:
 
     @property
     def byline(self) -> str:
-        """``Ransford et al.`` — enough to recognise the paper, not to cite it."""
+        """``Ransford et al.``: enough to recognise the paper, not to cite it."""
         if not self.authors:
             return "unknown"
         first = self.authors[0].split()[-1]
@@ -456,8 +456,8 @@ def rank(records: Sequence[Record], query: str) -> list[Hit]:
 def by_citations(records: Sequence[Record]) -> list[Hit]:
     """The no-query ordering: most cited first, unknown counts last.
 
-    A missing citation count is not a zero — ``yen2023soilpowered`` has none
-    recorded while ``boyle1993backscatter`` genuinely has none — so the two sort
+    A missing citation count is not a zero. ``yen2023soilpowered`` has none
+    recorded while ``boyle1993backscatter`` genuinely has none, so the two sort
     apart rather than into one indistinguishable block at the bottom.
     """
     ordered = sorted(

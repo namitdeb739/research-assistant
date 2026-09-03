@@ -146,7 +146,7 @@ def test_tokenize_drops_stopwords_and_single_characters() -> None:
 
 def test_tokenize_survives_unicode_and_markup() -> None:
     # Real titles here carry HTML entities and accented author names. Accented
-    # letters fall outside the ASCII word pattern, so "Pérez" splits — searching
+    # letters fall outside the ASCII word pattern, so "Pérez" splits. Searching
     # "penichet" still reaches the paper, which is what actually matters.
     assert search.tokenize("Pérez-Penichet: <i>in vitro</i> study") == [
         "rez",
@@ -237,7 +237,7 @@ def test_a_missing_citation_count_is_not_a_zero(vault_dir: Path) -> None:
     records = search.load(vault_dir)
     order = [hit.record.cite_key for hit in search.by_citations(records)]
 
-    # 350, then 0, then the unrecorded one — a null sorts last, not with the zeros.
+    # 350, then 0, then the unrecorded one: a null sorts last, not with the zeros.
     assert order == [
         "ransford2011mementos",
         "lovelace2019checkpointing",
@@ -327,7 +327,7 @@ def test_a_pdf_on_disk_is_distinguished_from_one_merely_claimed(
     assert mementos.has_pdf
     assert mementos.pdf_path is not None
     assert mementos.pdf_path.is_file()
-    # Claims nothing, but records where to get it — which is not the same as
+    # Claims nothing, but records where to get it, which is not the same as
     # having it, and `pdf` says so on stderr rather than printing a path.
     assert not alfred.has_pdf
     assert alfred.pdf_url == "https://example.invalid/alfred.pdf"

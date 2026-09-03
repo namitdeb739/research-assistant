@@ -10,7 +10,7 @@ over title, topics, takeaway and abstract; `show` resolves one note by cite key,
 name or DOI.
 
 Warn-only: always exits 0. Both tools still run, because the exceptions are
-real — inspecting one note's raw YAML, or debugging what `tidy` did to a body,
+real: inspecting one note's raw YAML, or debugging what `tidy` did to a body,
 are things the search commands genuinely cannot do.
 
 `pdfs/` is deliberately NOT covered. `research-assistant pdf <key>` prints a
@@ -54,9 +54,9 @@ SEARCH_NUDGE = (
 
 READ_NUDGE = (
     "Prefer `research-assistant show <cite_key>` over reading notes by path.\n"
-    "   It resolves by cite key, note name or DOI — no reproducing a 90-character\n"
-    "   filename — and `find` searches the whole corpus at once. Reading a handful\n"
-    "   and generalising is the failure these commands exist to replace."
+    "   It resolves by cite key, note name or DOI, with no 90-character filename\n"
+    "   to reproduce, and `find` searches the whole corpus at once. Reading a\n"
+    "   handful and generalising is the failure these commands exist to replace."
 )
 
 
@@ -67,7 +67,7 @@ def papers_dir() -> Path | None:
 
 
 def watched_roots(papers: Path) -> list[Path]:
-    """The prose folders. Not ``pdfs/`` — those are meant to be read directly."""
+    """The prose folders. Not ``pdfs/``, which is meant to be read directly."""
     return [papers, papers.parent / "topics"]
 
 
@@ -141,7 +141,7 @@ def main() -> int:
     save_warned(state_path, warned)
 
     print(f"\n💡 {nudge}", file=sys.stderr)
-    print(f"   This is a nudge, not a block — the {tool} still ran.", file=sys.stderr)
+    print(f"   This is a nudge, not a block; the {tool} still ran.", file=sys.stderr)
     return 0
 
 

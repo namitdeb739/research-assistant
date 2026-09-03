@@ -3,7 +3,7 @@
 One Markdown note per resource, named ``<cite_key>.md``, with the bibliographic
 record in YAML frontmatter. The filename is the uniqueness guard.
 
-The frontmatter holds only *intrinsic* properties — facts about the resource
+The frontmatter holds only *intrinsic* properties, facts about the resource
 itself. Judgements about it (is it any good, does it belong in related work) and
 progress through it (read yet?) are prose in the note body, not properties: a
 five-point scale in a table is a worse record of an opinion than a sentence is.
@@ -16,7 +16,7 @@ afterwards, and its property editor reformats frontmatter freely. Reading
 tolerates that; writing does not fight it.
 
 The one exception is :func:`update_frontmatter`, which the citation-graph linker
-uses to refresh ``cites``, ``topics`` and ``tags`` — facts about where a paper
+uses to refresh ``cites``, ``topics`` and ``tags``: facts about where a paper
 sits in the graph, which change as the vault grows and so cannot be write-once.
 It rewrites only the keys it is given, preserves the existing key order, and
 leaves the body byte-for-byte identical.
@@ -55,7 +55,7 @@ _GENERATED = (
 
 # Obsidian rejects these in file names; # ^ [ ] additionally mean something in
 # link syntax and would break a ``[[wikilink]]`` to the note. Slashes become a
-# dash rather than vanishing — deleting one turns "TCP/IP" into "TCPIP".
+# dash rather than vanishing, since deleting one turns "TCP/IP" into "TCPIP".
 _SEPARATORS = re.compile(r"\s*[\\/]\s*")
 _FORBIDDEN = re.compile(r'[:*?"<>|#^\[\]]')
 
@@ -70,8 +70,8 @@ PDF_SECTION = "PDF"
 
 # A note counts as read once it holds something no index could have supplied:
 # prose of your own, or quotes recovered from its own highlights. ``Abstract``
-# is deliberately not evidence — ``tidy`` backfills it from OpenAlex without
-# anyone having read a word.
+# is deliberately not evidence, because ``tidy`` backfills it from OpenAlex
+# without anyone having read a word.
 READ_SECTIONS = ("Notes",)
 READ_TAG = "read"
 
@@ -86,8 +86,8 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
     """Split a note into its frontmatter mapping and its body.
 
     The split is on the *first* closing fence only. A ``---`` horizontal rule
-    later in the prose is body, not a delimiter — splitting on it as well would
-    silently truncate the note, which matters now that
+    later in the prose is body, not a delimiter, and splitting on it as well
+    would silently truncate the note, which matters now that
     :func:`update_frontmatter` reattaches the body it reads here.
     """
     if not text.startswith(_FENCE):
@@ -177,7 +177,7 @@ def save_pdf(key: str, data: bytes, *, pdfs_dir: Path) -> Path:
     """Write ``<key>.pdf`` into the vault. Returns the new file path."""
     if not data.startswith(_PDF_MAGIC):
         raise VaultError(
-            f"{key}: the download is not a PDF — publishers behind a bot check "
+            f"{key}: the download is not a PDF. Publishers behind a bot check "
             "serve an HTML block page with a 200. Save it from the browser instead."
         )
     pdfs_dir.mkdir(parents=True, exist_ok=True)
@@ -212,7 +212,7 @@ def create_paper(
     papers_dir.mkdir(parents=True, exist_ok=True)
     path = papers_dir / f"{note_name(paper.title, key)}.md"
     if path.exists():
-        raise VaultError(f"{path} already exists — refusing to overwrite it")
+        raise VaultError(f"{path} already exists; refusing to overwrite it")
     path.write_text(
         note_text(
             paper,
@@ -352,7 +352,7 @@ def read_note(path: Path) -> tuple[dict[str, Any], str]:
     """Return ``(frontmatter, body)`` for one note.
 
     The public form of the split. Readers that need the prose as well as the
-    properties — searching it, reformatting it — would otherwise reach for the
+    properties (searching it, reformatting it) would otherwise reach for the
     private helper.
     """
     return _split_frontmatter(path.read_text(encoding="utf-8"))
