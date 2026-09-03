@@ -4,7 +4,11 @@ from __future__ import annotations
 
 import collections
 import json
-from pathlib import Path
+
+# Typer resolves these annotations at runtime through get_type_hints(), so
+# `Path` cannot move into the type-checking block despite only appearing in
+# annotations: --papers-dir and --out would both stop resolving.
+from pathlib import Path  # noqa: TC003
 from typing import TYPE_CHECKING, Annotated, Any
 
 import httpx
@@ -20,8 +24,6 @@ if TYPE_CHECKING:
 load_dotenv()
 
 app = typer.Typer(add_completion=False, help=__doc__)
-
-DEFAULT_BIB = Path("thesis/refs.bib")
 
 # Set once by the callback below, before any command body runs. There is no
 # default: the vault lives outside this tree and guessing at someone's folder
@@ -223,9 +225,9 @@ def _save_pdf(
 
 @app.command()
 def bib(
-    out: Annotated[Path, typer.Option("--out", help="Output path")] = DEFAULT_BIB,
+    out: Annotated[Path, typer.Option("--out", help="Where to write the bibliography")],
 ) -> None:
-    """Regenerate ``thesis/refs.bib`` from the Obsidian vault."""
+    """Regenerate a BibTeX bibliography from the Obsidian vault."""
     try:
         entries = vault.read_all(papers_dir=_papers_dir())
     except vault.VaultError as exc:
