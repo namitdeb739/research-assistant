@@ -108,7 +108,7 @@ def paper(
                 existing = _existing_note(record, openalex_id, papers_dir=papers_dir)
                 if existing is not None:
                     typer.secho(
-                        f"Already in the vault at {existing} — "
+                        f"Already in the vault at {existing}; "
                         "use --force to add anyway.",
                         fg=typer.colors.YELLOW,
                     )
@@ -164,7 +164,7 @@ def source(
     a dissertation cites more than that: a supervisor's slide deck, a vendor
     technical guide, a datasheet, a standard. Those are still evidence, and a
     note is the only place they can be cited from. Everything here is what you
-    typed — there is no lookup and nothing to be deterministic about.
+    typed, so there is no lookup and nothing to be deterministic about.
     """
     record = Paper(
         title=" ".join(title.split()),
@@ -178,7 +178,7 @@ def source(
 
     papers_dir = _papers_dir()
     # A corporate author has no surname, so the derived key takes the last word
-    # of the organisation's name — "distribuidas2020waspmote" for Libelium.
+    # of the organisation's name: "distribuidas2020waspmote" for Libelium.
     cite_key = key or record.cite_key()
     try:
         pdf_name = (
@@ -394,7 +394,7 @@ def expand(
     )
     if no_pdf:
         typer.secho(
-            f"{len(no_pdf)} had no fetchable PDF — see the 'Missing PDF' view.",
+            f"{len(no_pdf)} had no fetchable PDF; see the 'Missing PDF' view.",
             fg=typer.colors.YELLOW,
         )
     typer.echo("Now run the `relink` command.")
@@ -515,14 +515,14 @@ def relink() -> None:
     Only links to notes that actually exist are written, so the graph has no
     unresolved links. Obsidian derives the reverse direction itself in the
     "Linked mentions" pane, which is why there is no ``cited_by`` to keep in
-    sync. Idempotent — safe to re-run after any expand.
+    sync. Idempotent, so it is safe to re-run after any expand.
     """
     papers_dir = _papers_dir()
     _backfill_openalex_ids(papers_dir)
     _, by_openalex = vault.index(papers_dir)
     if not by_openalex:
         typer.secho(
-            "No note carries an openalex_id yet — run `expand` first.",
+            "No note carries an openalex_id yet; run `expand` first.",
             fg=typer.colors.YELLOW,
         )
         raise typer.Exit(0)
@@ -732,7 +732,7 @@ def _resolve(records: Sequence[search.Record], target: str) -> search.Record:
 
 
 def _citations(record: search.Record) -> str:
-    """``n.d. cit`` for an unrecorded count — which is not the same as zero."""
+    """``n.d. cit`` for an unrecorded count, which is not the same as zero."""
     return f"{record.citations} cit" if record.citations is not None else "n.d. cit"
 
 
@@ -816,7 +816,7 @@ def find(
     the net rather than narrowing it: "intermittent batteryless transiently
     powered" finds papers using any of the three vocabularies.
 
-    With filters but no query, lists the filtered set by citation count — the
+    With filters but no query, lists the filtered set by citation count: the
     "show me the shelf" mode.
     """
     records = _load(_papers_dir())
@@ -841,7 +841,7 @@ def find(
         return
 
     shown = hits[:limit]
-    ordering = "" if text.strip() else "   (no query — ranked by citations)"
+    ordering = "" if text.strip() else "   (no query; ranked by citations)"
     typer.secho(
         f"{len(records)} notes · {len(hits)} matched · showing {len(shown)}{ordering}",
         fg=typer.colors.CYAN,
@@ -874,7 +874,7 @@ def find(
 
     if len(hits) > len(shown):
         typer.secho(
-            f"{len(hits) - len(shown)} more — re-run with --limit {len(hits)}",
+            f"{len(hits) - len(shown)} more; re-run with --limit {len(hits)}",
             fg=typer.colors.BRIGHT_BLACK,
         )
 
@@ -1000,13 +1000,13 @@ def _extract(record: search.Record) -> list[highlights.Highlight]:
             highlights.FREE_DRAW,
             "no text geometry; re-highlight by selection to capture them",
         ),
-        (highlights.NO_TEXT, "selected no text \u2014 over a figure?"),
+        (highlights.NO_TEXT, "selected no text; over a figure?"),
     ):
         pages = [s.page for s in skipped if s.reason == reason]
         if pages:
             where = ", ".join(f"p{page}" for page in pages)
             typer.secho(
-                f"skipped {len(pages)} {reason} highlight(s) ({where}) \u2014 {note}",
+                f"skipped {len(pages)} {reason} highlight(s) ({where}): {note}",
                 fg=typer.colors.YELLOW,
                 err=True,
             )
@@ -1018,7 +1018,7 @@ def _notes_section(record: search.Record) -> str:
     if "Notes" not in record.sections:
         typer.secho(
             f"{record.cite_key}: the note has no `## Notes` heading. "
-            "Run `tidy` first \u2014 this will not synthesise the section.",
+            "Run `tidy` first; this will not synthesise the section.",
             fg=typer.colors.RED,
             err=True,
         )
@@ -1056,6 +1056,27 @@ def highlight(
         bool,
         typer.Option("--all", help="Count highlights in every note with a PDF"),
     ] = False,
+    dry_run: Annotated[
+        bool,
+        typer.Option(
+            "--dry-run", help="Print what --apply would write, without writing it"
+        ),
+    ] = False,
+    gold: Annotated[
+        bool,
+        typer.Option("--gold", help="Print the grouping the note already holds"),
+    ] = False,
+    score: Annotated[
+        Path | None,
+        typer.Option("--score", help="Score a grouping file against the note's own"),
+    ] = None,
+    regroup: Annotated[
+        bool,
+        typer.Option(
+            "--regroup",
+            help="Allow --apply to move quotes the note has already grouped",
+        ),
+    ] = False,
     audit: Annotated[
         bool,
         typer.Option("--audit", help="Re-derive every quote and check the notes match"),
@@ -1090,8 +1111,18 @@ def highlight(
     record = _resolve(records, target)
     found = _extract(record)
 
+    if gold:
+        typer.echo(
+            json.dumps(_gold_grouping(record, found), indent=2, ensure_ascii=False)
+        )
+        return
+
+    if score is not None:
+        _score_grouping(record, found, score)
+        return
+
     if apply is not None:
-        _apply_grouping(record, found, apply)
+        _apply_grouping(record, found, apply, regroup=regroup, dry_run=dry_run)
         return
 
     placed = _placed(record)
@@ -1112,10 +1143,8 @@ def highlight(
     )
 
 
-def _apply_grouping(
-    record: search.Record, found: Sequence[highlights.Highlight], path: Path
-) -> None:
-    """Write the machine-owned region of ``## Notes`` from a grouping by order."""
+def _load_grouping(path: Path) -> dict[str, list[int]]:
+    """A ``{heading: [order, ...]}`` file, as written by the skill."""
     loaded = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(loaded, dict):
         typer.secho(
@@ -1124,9 +1153,68 @@ def _apply_grouping(
             err=True,
         )
         raise typer.Exit(1)
-    grouping = {str(k): [int(o) for o in v] for k, v in loaded.items()}
+    return {str(k): [int(o) for o in v] for k, v in loaded.items()}
+
+
+def _gold_grouping(
+    record: search.Record, found: Sequence[highlights.Highlight]
+) -> dict[str, list[int]]:
+    """The grouping the note already holds, the one you approved by keeping it."""
+    _, groups = highlights.split_notes(record.sections.get("Notes", ""))
+    grouping, unresolved = highlights.grouping_of(found, groups)
+    if unresolved:
+        typer.secho(
+            f"left out {len(unresolved)} quote(s) the PDF no longer produces; "
+            "run --audit",
+            fg=typer.colors.YELLOW,
+            err=True,
+        )
+    return grouping
+
+
+def _score_grouping(
+    record: search.Record, found: Sequence[highlights.Highlight], path: Path
+) -> None:
+    """Report how far a candidate grouping is from the note's own."""
+    candidate = _load_grouping(path)
     try:
-        groups = highlights.group_quotes(found, grouping)
+        scores = highlights.score_groupings(_gold_grouping(record, found), candidate)
+    except highlights.HighlightError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    typer.secho(f"{path.name} against {record.cite_key}", fg=typer.colors.CYAN)
+    for label, value in (
+        ("adjusted Rand", scores.adjusted_rand),
+        ("homogeneity", scores.homogeneity),
+        ("completeness", scores.completeness),
+        ("V-measure", scores.v_measure),
+    ):
+        typer.echo(f"    {label:<16}{value:>7.3f}")
+
+
+def _apply_grouping(
+    record: search.Record,
+    found: Sequence[highlights.Highlight],
+    path: Path,
+    *,
+    regroup: bool,
+    dry_run: bool,
+) -> None:
+    """Write the machine-owned region of ``## Notes`` from a grouping by order."""
+    grouping = _load_grouping(path)
+    # The same lookup stage 1 reports as ``group``, keyed the way the grouping
+    # file addresses a quote. ``--regroup`` withholds it, which is what makes a
+    # wholesale rewrite an explicit act rather than an accident.
+    placed = _placed(record)
+    by_order = {
+        h.order: heading
+        for h in found
+        if (heading := placed.get((h.page, h.text))) is not None
+    }
+    try:
+        groups = highlights.group_quotes(
+            found, grouping, placed=None if regroup else by_order
+        )
     except highlights.HighlightError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
@@ -1137,12 +1225,15 @@ def _apply_grouping(
     sections["Notes"] = highlights.render_notes(
         prose, groups, pdf_name=_pdf_of(record).name
     )
+    if dry_run:
+        typer.echo(sections["Notes"])
+        return
     changed = vault.write_body(record.path, vault.render_body(sections))
     vault.sync_read_tag(record.path, sections)
     count = sum(len(quotes) for _, quotes in groups)
     typer.secho(
         f"{'Wrote' if changed else 'Unchanged:'} {count} quote(s) under "
-        f"{len(groups)} heading(s) \u2014 {record.path}",
+        f"{len(groups)} heading(s): {record.path}",
         fg=typer.colors.GREEN if changed else typer.colors.BRIGHT_BLACK,
     )
 
@@ -1177,7 +1268,7 @@ def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> Non
 
     A quote in a note that the PDF no longer produces is drift: either the
     highlight was deleted, or the text was hand-edited. Neither is repaired
-    automatically — the edit may have been deliberate.
+    automatically, because the edit may have been deliberate.
     """
     drifted: list[dict[str, Any]] = []
     unwritten: dict[str, int] = {}

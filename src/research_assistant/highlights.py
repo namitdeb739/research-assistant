@@ -16,9 +16,11 @@ that touches case or punctuation.
 
 from __future__ import annotations
 
+import math
 import re
 import textwrap
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -33,9 +35,9 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 # A gap wider than this fraction of the character's size is a word break. The
-# distribution is sharply bimodal — measured on page 5 of the Yen paper,
+# distribution is sharply bimodal. Measured on page 5 of the Yen paper,
 # intra-word gaps are 0.00pt (slightly negative under kerning) and inter-word
-# gaps are 1.96pt at size 9.96, a ratio of 0.197 — so this sits in the middle of
+# gaps are 1.96pt at size 9.96, a ratio of 0.197, so this sits in the middle of
 # a wide empty band. An earlier 0.20 was just above the real gap and silently
 # produced `SMFCsusealayerofsoilastheelectrolyte`.
 SPACE_RATIO = 0.1
@@ -55,6 +57,11 @@ HEADING_PREFIX = "### "
 
 FREE_DRAW = "free-draw"
 NO_TEXT = "no text"
+
+# A heading with one quote under it is fine; a heading per quote is not a
+# grouping. Fewer headings than this and there is nothing to group, so the check
+# would fire only on notes holding two or three highlights in total.
+SINGLETON_HEADING_FLOOR = 3
 
 
 class HighlightError(Exception):
@@ -86,8 +93,18 @@ class Quote:
     text: str
 
 
+@dataclass(frozen=True, slots=True)
+class Scores:
+    """How close one grouping of the same quotes is to another."""
+
+    adjusted_rand: float
+    homogeneity: float
+    completeness: float
+    v_measure: float
+
+
 def _name(value: Any) -> str | None:
-    """A PDF name object's value — ``/Highlight`` arrives as ``PSLiteral``."""
+    """A PDF name object's value; ``/Highlight`` arrives as ``PSLiteral``."""
     resolved = resolve1(value)
     name = getattr(resolved, "name", resolved)
     return name if isinstance(name, str) else None
@@ -97,8 +114,8 @@ def _quads(annot: Mapping[str, Any]) -> list[tuple[float, ...]]:
     """``/QuadPoints`` as 8-number groups, *in array order*.
 
     Array order is what pdf.js writes, and pdf.js writes selection order, which
-    is reading order. Ordering by anything derived from the geometry instead —
-    clustering by y, sorting fragments by top — needs a notion of "line" that
+    is reading order. Ordering by anything derived from the geometry instead
+    (clustering by y, sorting fragments by top) needs a notion of "line" that
     two-column papers do not have, and interleaves the columns.
     """
     points = resolve1(annot.get("QuadPoints"))
@@ -176,7 +193,7 @@ def normalise(text: str) -> str:
 def _order_key(page: int, quad: tuple[float, ...]) -> tuple[int, float, float]:
     """Document reading order: page, then the first quad's top, then its left.
 
-    Not ``/Annots`` array order, which is creation order and interleaves badly —
+    Not ``/Annots`` array order, which is creation order and interleaves badly:
     on page 2 of the Yen paper the first-created highlight sits below the third.
     """
     return (page, -max(quad[1::2]), min(quad[0::2]))
@@ -256,7 +273,7 @@ def page_link(pdf_name: str, page: int) -> str:
 _GUARD = "\x00"
 
 # The link closing a bullet. Anchored at the end, so a quote that itself ends in
-# a bracket — `(about 36◦C according to Zhang et al.)` — is not mistaken for one.
+# a bracket, `(about 36◦C according to Zhang et al.)`, is not mistaken for one.
 _TRAILING_LINK = re.compile(r"\s*\(\[\[[^\[\]]*#page=(\d+)[^\[\]]*\]\]\)$")
 
 
@@ -346,13 +363,23 @@ def render_notes(
 
 
 def group_quotes(
-    highlights: Sequence[Highlight], grouping: Mapping[str, Sequence[int]]
+    highlights: Sequence[Highlight],
+    grouping: Mapping[str, Sequence[int]],
+    *,
+    placed: Mapping[int, str] | None = None,
 ) -> list[tuple[str, list[Quote]]]:
     """Turn ``{heading: [order, ...]}`` into groups of quotes.
 
     Orders, not text: the caller cannot alter a quote because it never holds
     one. Every highlight must appear exactly once, so a grouping cannot drop,
     duplicate or invent a quote either.
+
+    ``placed`` maps an order to the heading that quote already sits under in the
+    note, and a grouping that moves one somewhere else is refused. Without it a
+    re-run is free to reshuffle quotes nobody touched, which is the whole of the
+    churn: with it, the only thing a second pass can change is where the *new*
+    quotes land. Regrouping a note wholesale is a deliberate act, so it is the
+    caller that omits ``placed`` to allow it.
     """
     by_order = {highlight.order: highlight for highlight in highlights}
     seen: list[int] = [order for orders in grouping.values() for order in orders]
@@ -374,6 +401,32 @@ def group_quotes(
             f"grouping drops {len(missing)} of {len(by_order)} highlight(s): "
             f"{', '.join(str(o) for o in missing[:8])}"
         )
+
+    heading_of = {
+        order: heading for heading, orders in grouping.items() for order in orders
+    }
+    moved = sorted(
+        (order, was, heading_of[order])
+        for order, was in (placed or {}).items()
+        if order in heading_of and heading_of[order] != was
+    )
+    if moved:
+        shown = "; ".join(
+            f"{order} {was!r} -> {now!r}" for order, was, now in moved[:4]
+        )
+        raise HighlightError(
+            f"grouping moves {len(moved)} already-grouped quote(s) to another "
+            f"heading, and headings are spelled exactly as the note has them: "
+            f"{shown}. Pass --regroup to rewrite the whole grouping."
+        )
+
+    singletons = sum(1 for orders in grouping.values() if len(orders) == 1)
+    if len(grouping) >= SINGLETON_HEADING_FLOOR and singletons * 2 > len(grouping):
+        raise HighlightError(
+            f"grouping is a heading per quote: {singletons} of {len(grouping)} "
+            f"headings hold a single quote. Name the idea quotes share."
+        )
+
     return [
         (
             heading,
@@ -384,3 +437,90 @@ def group_quotes(
         )
         for heading, orders in grouping.items()
     ]
+
+
+def grouping_of(
+    highlights: Sequence[Highlight], groups: Sequence[tuple[str, Sequence[Quote]]]
+) -> tuple[dict[str, list[int]], list[Quote]]:
+    """The ``{heading: [order, ...]}`` behind a note, and what it could not place.
+
+    The inverse of :func:`group_quotes`. A note that has already been written is
+    itself a grouping, one you approved, so recovering it costs nothing and
+    turns every paper you have read into a case to measure a grouper against. A
+    quote the PDF no longer produces is drift, and is handed back rather than
+    guessed at; ``--audit`` is what explains it.
+    """
+    by_key = {(h.page, h.text): h.order for h in highlights}
+    grouping: dict[str, list[int]] = {}
+    unresolved: list[Quote] = []
+    for heading, quotes in groups:
+        orders = grouping.setdefault(heading, [])
+        for quote in quotes:
+            order = by_key.get((quote.page, quote.text))
+            if order is None:
+                unresolved.append(quote)
+            else:
+                orders.append(order)
+    return grouping, unresolved
+
+
+def _pairs(count: int) -> float:
+    """How many pairs a group of ``count`` quotes contributes."""
+    return count * (count - 1) / 2
+
+
+def score_groupings(
+    gold: Mapping[str, Sequence[int]], candidate: Mapping[str, Sequence[int]]
+) -> Scores:
+    """Compare two groupings of the same quotes, by the pairs they agree on.
+
+    Both measures read only the partition, never a heading's wording, so a
+    rename costs nothing and what is scored is the one thing a grouper is being
+    asked to get right. The adjusted Rand index is chance-corrected: a grouping
+    no better than random scores about zero, and one that splits or merges is
+    penalised either way. V-measure adds the direction the ARI hides:
+    homogeneity falls when a heading mixes two ideas, completeness when one idea
+    is spread over two headings, and those are different mistakes.
+    """
+    gold_of = {order: heading for heading, orders in gold.items() for order in orders}
+    candidate_of = {
+        order: heading for heading, orders in candidate.items() for order in orders
+    }
+    if set(gold_of) != set(candidate_of):
+        raise HighlightError(
+            "the two groupings do not cover the same quotes: "
+            f"{len(set(gold_of) ^ set(candidate_of))} order(s) appear in one only"
+        )
+    total = len(gold_of)
+    if total == 0:
+        raise HighlightError("nothing to score: the note holds no grouped quotes")
+
+    table = Counter((gold_of[order], candidate_of[order]) for order in gold_of)
+    rows = Counter(gold_of.values())
+    columns = Counter(candidate_of.values())
+
+    agreed = sum(_pairs(count) for count in table.values())
+    in_gold = sum(_pairs(count) for count in rows.values())
+    in_candidate = sum(_pairs(count) for count in columns.values())
+    expected = in_gold * in_candidate / _pairs(total) if total > 1 else 0.0
+    largest = (in_gold + in_candidate) / 2
+    # Both partitions trivial and identical: no pair carries information, and
+    # the two agree on all of it.
+    rand = 1.0 if largest == expected else (agreed - expected) / (largest - expected)
+
+    shared = sum(
+        (count / total) * math.log(count * total / (rows[g] * columns[c]))
+        for (g, c), count in table.items()
+    )
+    spread_gold = -sum((n / total) * math.log(n / total) for n in rows.values())
+    spread_candidate = -sum((n / total) * math.log(n / total) for n in columns.values())
+    # A single heading holds no information to lose, so it is trivially pure.
+    homogeneity = 1.0 if spread_gold == 0 else shared / spread_gold
+    completeness = 1.0 if spread_candidate == 0 else shared / spread_candidate
+    combined = homogeneity + completeness
+    return Scores(
+        adjusted_rand=rand,
+        homogeneity=homogeneity,
+        completeness=completeness,
+        v_measure=0.0 if combined == 0 else 2 * homogeneity * completeness / combined,
+    )

@@ -3,8 +3,8 @@
 Three tiers, each testing what it is good at. The normalisation rules are pure
 string functions and need no PDF at all. The geometry needs one, so
 ``fixtures/make_highlights_pdf.py`` writes it from the standard library rather
-than committing a binary nobody can review. The strongest evidence — exact
-strings from the real corpus — cannot run in CI, so it is marked ``vault`` and
+than committing a binary nobody can review. The strongest evidence, exact
+strings from the real corpus, cannot run in CI, so it is marked ``vault`` and
 deselected by default, exactly as ``hil`` already works for hardware.
 """
 
@@ -250,6 +250,112 @@ def test_group_quotes_refuses_to_drop_repeat_or_invent(
         highlights.group_quotes(found_two(), grouping)
 
 
+def found_n(count: int) -> list[highlights.Highlight]:
+    return [
+        highlights.Highlight(page=n, text=f"quote {n}", order=n)
+        for n in range(1, count + 1)
+    ]
+
+
+def test_group_quotes_refuses_to_move_a_quote_the_note_already_placed() -> None:
+    with pytest.raises(highlights.HighlightError, match="already-grouped"):
+        highlights.group_quotes(found_two(), {"A": [1, 2]}, placed={1: "B"})
+
+
+def test_a_renamed_heading_reads_as_a_move() -> None:
+    """Headings are spelled exactly as the note has them, so casing counts."""
+    with pytest.raises(highlights.HighlightError, match="already-grouped"):
+        highlights.group_quotes(found_two(), {"a": [1, 2]}, placed={1: "A"})
+
+
+def test_placed_quotes_kept_where_they_are_leave_the_new_ones_free() -> None:
+    groups = highlights.group_quotes(
+        found_n(4), {"A": [1, 3], "B": [2, 4]}, placed={1: "A", 2: "B"}
+    )
+    assert [heading for heading, _ in groups] == ["A", "B"]
+
+
+def test_omitting_placed_allows_a_wholesale_regrouping() -> None:
+    assert highlights.group_quotes(found_two(), {"A": [1, 2]})
+
+
+def test_group_quotes_refuses_a_heading_per_quote() -> None:
+    grouping = {f"H{h.order}": [h.order] for h in found_n(4)}
+    with pytest.raises(highlights.HighlightError, match="heading per quote"):
+        highlights.group_quotes(found_n(4), grouping)
+
+
+def test_a_lone_singleton_heading_beside_real_groups_is_fine() -> None:
+    """The rule is about the proportion: one quote under a heading is allowed."""
+    assert highlights.group_quotes(found_n(5), {"A": [1, 2], "B": [3, 4], "C": [5]})
+
+
+def test_two_headings_are_never_a_heading_per_quote() -> None:
+    """Below the floor there is nothing to group, so the check stays quiet."""
+    assert highlights.group_quotes(found_two(), {"A": [1], "B": [2]})
+
+
+# --- Reading a grouping back out, and scoring one --------------------------
+
+
+def test_grouping_of_inverts_group_quotes() -> None:
+    grouping = {"A": [1, 3], "B": [2, 4]}
+    groups = highlights.group_quotes(found_n(4), grouping)
+    assert highlights.grouping_of(found_n(4), groups) == (grouping, [])
+
+
+def test_grouping_of_hands_back_a_quote_the_pdf_no_longer_has() -> None:
+    groups = [("A", quotes((9, "a quote that was edited")))]
+    grouping, unresolved = highlights.grouping_of(found_n(2), groups)
+    assert grouping == {"A": []}
+    assert unresolved == quotes((9, "a quote that was edited"))
+
+
+def test_an_identical_grouping_scores_one() -> None:
+    grouping = {"A": [1, 2], "B": [3, 4]}
+    scores = highlights.score_groupings(grouping, grouping)
+    assert scores.adjusted_rand == pytest.approx(1.0)
+    assert scores.v_measure == pytest.approx(1.0)
+
+
+def test_renaming_a_heading_costs_nothing() -> None:
+    """Only the partition is scored, so wording is free to differ."""
+    scores = highlights.score_groupings(
+        {"A": [1, 2], "B": [3, 4]}, {"Power output": [1, 2], "Why not solar": [3, 4]}
+    )
+    assert scores.adjusted_rand == pytest.approx(1.0)
+
+
+def test_a_grouping_worse_than_chance_scores_below_zero() -> None:
+    """The textbook case: every pair the gold joins, the candidate splits."""
+    scores = highlights.score_groupings(
+        {"A": [1, 2], "B": [3, 4]}, {"X": [1, 3], "Y": [2, 4]}
+    )
+    assert scores.adjusted_rand == pytest.approx(-0.5)
+
+
+def test_over_splitting_keeps_headings_pure_but_incomplete() -> None:
+    """Homogeneity and completeness are what tell the two mistakes apart."""
+    scores = highlights.score_groupings(
+        {"A": [1, 2], "B": [3, 4]}, {"X": [1], "Y": [2], "Z": [3, 4]}
+    )
+    assert scores.homogeneity == pytest.approx(1.0)
+    assert scores.completeness < 1.0
+
+
+def test_over_merging_is_complete_but_impure() -> None:
+    scores = highlights.score_groupings(
+        {"A": [1, 2], "B": [3, 4]}, {"Everything": [1, 2, 3, 4]}
+    )
+    assert scores.completeness == pytest.approx(1.0)
+    assert scores.homogeneity < 1.0
+
+
+def test_scoring_refuses_groupings_of_different_quotes() -> None:
+    with pytest.raises(highlights.HighlightError, match="same quotes"):
+        highlights.score_groupings({"A": [1, 2]}, {"X": [1, 2, 3]})
+
+
 # --- Tier 3: the real corpus ------------------------------------------------
 
 
@@ -296,7 +402,7 @@ def test_no_highlight_is_silently_lost() -> None:
     The count itself is not asserted: highlights are added by reading, so a
     literal was a test of how much had been read on the day it was written and
     failed on the next paper. What must hold is that nothing disappears in
-    between — the failure the geometry code would actually produce.
+    between, which is the failure the geometry code would actually produce.
     """
     path = yen_pdf()
     if not path.is_file():
