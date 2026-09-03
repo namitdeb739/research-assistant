@@ -1,0 +1,48 @@
+# Both the pre-commit and commit-msg hook types are installed. Since pre-commit
+# 3.0 a hook that declares no `stages` runs at *every* installed stage, so
+# without this every hook below ran twice per commit. Commitizen declares
+# `stages: [commit-msg]` itself, so it still runs there.
+default_stages: [pre-commit]
+
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      # uv.lock legitimately exceeds the 500 KB default and has to be
+      # committed, so exempt it by name rather than raising the limit.
+      - id: check-added-large-files
+        exclude: ^uv\.lock$
+      - id: detect-private-key
+
+  # Run via uv so these hooks use the project's own pinned ruff/mypy and can
+  # see its dependencies. Isolated pre-commit envs drift from pyproject.toml
+  # and lack typer/pytest, which makes mypy --strict reject every decorated
+  # function.
+  - repo: local
+    hooks:
+      - id: ruff
+        name: ruff
+        entry: uv run ruff check --fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff-format
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: mypy
+        name: mypy
+        entry: uv run mypy --config-file=pyproject.toml src/ tests/
+        language: system
+        pass_filenames: false
+
+  - repo: https://github.com/commitizen-tools/commitizen
+    rev: v4.6.0
+    hooks:
+      - id: commitizen
+        stages: [commit-msg]
