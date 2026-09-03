@@ -1,0 +1,15 @@
+{
+  "name": "research-assistant",
+  "owner": {
+    "name": "Namit Deb",
+    "email": "namitdeb739@gmail.com",
+    "url": "https://github.com/namitdeb739"
+  },
+  "plugins": [
+    {
+      "name": "research-assistant",
+      "source": "./",
+      "description": "Ranked search, note↔PDF navigation and verbatim highlight extraction over an Obsidian bibliography vault."
+    }
+  ]
+}

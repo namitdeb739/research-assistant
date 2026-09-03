@@ -1,0 +1,14 @@
+{
+  "name": "research-assistant",
+  "description": "Ranked search, note↔PDF navigation and verbatim highlight extraction over an Obsidian bibliography vault. Pairs with the research-assistant CLI.",
+  "version": "0.1.0",
+  "author": {
+    "name": "Namit Deb",
+    "email": "namitdeb739@gmail.com",
+    "url": "https://github.com/namitdeb739"
+  },
+  "homepage": "https://github.com/namitdeb739/research-assistant",
+  "repository": "https://github.com/namitdeb739/research-assistant",
+  "license": "MIT",
+  "keywords": ["obsidian", "bibliography", "research", "bibtex", "pdf"]
+}

@@ -130,3 +130,18 @@ just test-vault  # the tests that read a real vault
 ## Licence
 
 MIT.
+
+## The Claude Code plugin
+
+Half of this is knowledge, not code: when to search rather than read, how to
+group quotes without ever touching their text, what the notes deliberately do
+not record. That ships in the same repo, versioned by the same tag.
+
+```text
+/plugin marketplace add namitdeb739/research-assistant
+/plugin install research-assistant
+```
+
+It adds two skills (`research-vault`, `highlights`), the `/lit` command, and a
+warn-only `PreToolUse` hook that nudges a `Read` or `grep` of the papers folder
+toward `find` and `show`. The hook is silent unless `VAULT_PAPERS_DIR` is set.
