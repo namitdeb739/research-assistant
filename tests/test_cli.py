@@ -15,7 +15,7 @@ import pytest
 from notes import write_note
 from typer.testing import CliRunner
 
-from research_assistant import cli, graph, screening, vault
+from research_assistant import cli, graph, health, screening, search, vault
 
 runner = CliRunner()
 
@@ -322,6 +322,49 @@ def test_tidy_adopts_a_hand_saved_pdf_only_when_the_note_claims_none(
     runner.invoke(cli.app, ["--papers-dir", str(papers), "tidy", "--no-abstracts"])
 
     assert vault.read_frontmatter(note)["pdf"] == "[[maioli2021alfred.pdf]]"
+
+
+def test_fix_writes_the_retracted_key_and_a_second_run_is_a_noop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    note = write_note(papers, "Withdrawn", key="mehra2020hydro", doi="10.1/r")
+    report = health.Report(
+        checked=1,
+        unchecked=(),
+        retracted=((search.load(papers)[0], "retraction"),),
+        corrections=(),
+        drift=(),
+        duplicates=(),
+    )
+    monkeypatch.setattr(health, "check", lambda *a, **k: report)
+
+    first = runner.invoke(cli.app, ["--papers-dir", str(papers), "health", "--fix"])
+    assert first.exit_code == 1  # a finding is a finding, fixed or not
+    assert vault.read_frontmatter(note)["retracted"] == "retraction"
+    assert "Set `retracted` on 1 note(s)" in first.stdout
+
+    second = runner.invoke(cli.app, ["--papers-dir", str(papers), "health", "--fix"])
+    assert "Set `retracted` on 0 note(s)" in second.stdout
+
+
+def test_a_withdrawn_notice_sets_retracted_back_to_null(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Derived, not claimed: nothing has to keep the key true by hand."""
+    papers = tmp_path / "papers"
+    note = write_note(
+        papers, "Reinstated", key="a2020one", doi="10.1/r", retracted="retraction"
+    )
+    clean = health.Report(
+        checked=1, unchecked=(), retracted=(), corrections=(), drift=(), duplicates=()
+    )
+    monkeypatch.setattr(health, "check", lambda *a, **k: clean)
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "health", "--fix"])
+
+    assert result.exit_code == 0
+    assert vault.read_frontmatter(note)["retracted"] is None
 
 
 def _report_count(output: str, label: str) -> int:

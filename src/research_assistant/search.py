@@ -203,6 +203,8 @@ class Record:
     authors: tuple[str, ...]
     year: int | None
     venue: str | None
+    entry_type: str
+    retracted: str | None
     citations: int | None
     doi: str | None
     openalex_id: str | None
@@ -294,6 +296,8 @@ def _record(path: Path, *, pdfs_dir: Path) -> Record | None:
         authors=authors,
         year=_int(front.get("year")),
         venue=_str(front.get("venue")),
+        entry_type=_str(front.get("entry_type")) or "article",
+        retracted=_str(front.get("retracted")),
         citations=_int(front.get("citations")),
         doi=_str(front.get("doi")),
         openalex_id=_str(front.get("openalex_id")),
@@ -483,6 +487,7 @@ def apply_filters(
     max_year: int | None = None,
     min_citations: int | None = None,
     has_pdf: bool | None = None,
+    retracted: bool | None = None,
 ) -> list[Record]:
     """Narrow the corpus before ranking.
 
@@ -510,6 +515,8 @@ def apply_filters(
         if min_citations is not None and (record.citations or 0) < min_citations:
             continue
         if has_pdf is not None and record.has_pdf is not has_pdf:
+            continue
+        if retracted is not None and bool(record.retracted) is not retracted:
             continue
         kept.append(record)
     return kept

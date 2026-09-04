@@ -76,11 +76,12 @@ skills never describe a CLI you do not have. It adds:
 
 | Command | Does | Notable flags |
 |---|---|---|
-| `find <query…>` | Ranked search, best match first | `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--limit` `--full` `--json` |
+| `find <query…>` | Ranked search, best match first | `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--retracted` `--limit` `--full` `--json` |
 | `show <target…>` | Whole notes, by cite key, note name or DOI | |
 | `near <target>` | What it cites, and what in the vault cites it | |
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
 | `cite-check <file.tex…>` | Reconcile a document's `\cite` keys against the vault | `--bib` `--unused`/`--no-unused` |
+| `health` | Retractions, duplicate pairs, and metadata drift | `--drift` `--no-retractions` `--no-duplicates` `--fix` |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
 authors (×1). No index, no embeddings. Terms are OR-ed and there is no stemmer,
@@ -101,6 +102,32 @@ are only reported, because a vault is meant to be larger than any one paper.
 research-assistant cite-check thesis.tex chapters/*.tex
 research-assistant cite-check --bib refs.bib     # keys defined, not cited
 ```
+
+`health` is the maintenance pass. Citing a retracted paper in a thesis is a
+career-grade error, and a corpus kept over years silently accumulates
+preprint/version-of-record pairs. It exits non-zero on any finding, so it works
+as a CI gate, and about five Crossref requests cover a 180-note vault.
+
+```bash
+research-assistant health              # retractions and duplicate pairs
+research-assistant health --drift      # also compare title/venue/year with Crossref
+research-assistant health --fix        # write the `retracted` key. Nothing else.
+```
+
+Retractions are keyed off Crossref's `updated-by`, never `update-to`: publishers
+register `update-to` on the retracted article as well as on the notice, so it
+cannot tell the two apart.
+
+**`--drift` is opt-in, and it is a prompt for review rather than a defect list.**
+A venue you deliberately shortened to `IMWUT` reads as drift against Crossref's
+full proceedings title, and Crossref truncates some titles the note records in
+full — so the note is often the better record. Nothing is ever auto-applied.
+
+**`health` never merges a duplicate.** The preprint's note may hold your
+highlights and the published one may not, and no rule can decide which prose
+survives. It prints the pair and the two commands that would resolve it: delete
+the note, and record why in the screening ledger so `expand` never brings it
+back.
 
 ### Write
 

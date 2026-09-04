@@ -20,6 +20,7 @@ import typer
 from research_assistant import (
     bibtex,
     graph,
+    health,
     highlights,
     screening,
     search,
@@ -1213,8 +1214,11 @@ def _venue(record: search.Record, width: int = 46) -> str:
 def _headline(record: search.Record) -> str:
     year = record.year if record.year is not None else "n.d."
     mark = "[pdf]" if record.has_pdf else "[no pdf]"
+    # Loud, and before the metadata: citing one of these is the error the whole
+    # `health` command exists to prevent.
+    flag = f"[{record.retracted.upper()}] " if record.retracted else ""
     return (
-        f"{record.title} — {record.byline} · {_venue(record)} {year} · "
+        f"{flag}{record.title} — {record.byline} · {_venue(record)} {year} · "
         f"{_citations(record)} · {mark}"
     )
 
@@ -1270,6 +1274,12 @@ def find(
             "--has-pdf/--no-pdf", help="Only papers whose PDF is (not) on disk"
         ),
     ] = None,
+    retracted: Annotated[
+        bool | None,
+        typer.Option(
+            "--retracted/--not-retracted", help="Only papers that are (not) retracted"
+        ),
+    ] = None,
     limit: Annotated[int, typer.Option("--limit", help="How many hits to print")] = 10,
     full: Annotated[
         bool, typer.Option("--full", help="Print whole notes, not snippets")
@@ -1297,6 +1307,7 @@ def find(
         max_year=max_year,
         min_citations=min_citations,
         has_pdf=has_pdf,
+        retracted=retracted,
     )
 
     text = " ".join(query or [])
@@ -1482,6 +1493,118 @@ def cite_check(
 
     if missing:
         raise typer.Exit(1)
+
+
+@app.command(name="health")
+def health_check(
+    retractions: Annotated[
+        bool, typer.Option("--retractions/--no-retractions", help="Check for notices")
+    ] = True,
+    drift: Annotated[
+        bool,
+        typer.Option(
+            "--drift/--no-drift",
+            help="Compare title, venue, year and type with Crossref (opt-in)",
+        ),
+    ] = False,
+    duplicates: Annotated[
+        bool, typer.Option("--duplicates/--no-duplicates", help="Find preprint pairs")
+    ] = True,
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Write the `retracted` key. Nothing else.")
+    ] = False,
+) -> None:
+    """Check the corpus against Crossref: retractions, drift and duplicate pairs.
+
+    Read-only unless ``--fix``, and exits non-zero when anything is found, so it
+    works as a pre-commit or CI check. About five requests for a 180-note vault.
+
+    ``--drift`` is opt-in because it is a prompt for review rather than a defect
+    list: a short venue you chose on purpose reads as drift against Crossref's
+    full proceedings title, and Crossref truncates some titles that the note
+    records in full. Leaving it on by default would make this command exit
+    non-zero forever and stop being a usable gate.
+
+    ``--fix`` writes exactly one thing, the ``retracted`` key, because that has
+    an unambiguous upstream answer. Drift is a judgement and resolving a
+    duplicate is a deletion; both are reported and left to you.
+    """
+    papers_dir = _papers_dir()
+    records = _load(papers_dir)
+    with httpx.Client(follow_redirects=True) as client:
+        try:
+            report = health.check(
+                records,
+                client=client,
+                retractions=retractions,
+                drift=drift,
+                duplicates=duplicates,
+            )
+        except httpx.HTTPError as exc:
+            typer.secho(f"Crossref: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+
+    typer.secho(
+        f"{len(records)} notes · {report.checked} checked against Crossref · "
+        f"{len(report.unchecked)} with no DOI to check",
+        fg=typer.colors.CYAN,
+    )
+
+    if report.retracted:
+        typer.secho(f"\nRetracted ({len(report.retracted)})", fg=typer.colors.RED)
+        for record, kind in report.retracted:
+            typer.secho(f"  {record.cite_key}  {kind}", fg=typer.colors.RED)
+            typer.echo(f"    {record.title}")
+    if report.corrections:
+        typer.secho(
+            f"\nCorrected or amended ({len(report.corrections)})",
+            fg=typer.colors.YELLOW,
+        )
+        for record, notice in report.corrections:
+            typer.echo(f"  {record.cite_key}  {notice.kind}  {notice.doi}")
+    if report.drift:
+        typer.secho(f"\nMetadata drift ({len(report.drift)})", fg=typer.colors.YELLOW)
+        for entry in report.drift:
+            typer.echo(f"  {entry.cite_key}  {entry.field}")
+            typer.secho(f"    note:     {entry.in_note}", fg=typer.colors.BRIGHT_BLACK)
+            typer.secho(f"    crossref: {entry.upstream}", fg=typer.colors.CYAN)
+    if report.duplicates:
+        typer.secho(
+            f"\nProbable preprint/version-of-record pairs ({len(report.duplicates)})",
+            fg=typer.colors.YELLOW,
+        )
+        for pair in report.duplicates:
+            typer.echo(
+                f"  {pair.preprint.cite_key} → {pair.version_of_record.cite_key}"
+            )
+            typer.secho(f"    {pair.evidence}", fg=typer.colors.BRIGHT_BLACK)
+            # Not a merge: the preprint's note may hold your highlights and the
+            # published one may not, and no rule can choose which prose survives.
+            typer.secho(f'    rm "{pair.preprint.path}"', fg=typer.colors.BRIGHT_BLACK)
+            ident = pair.preprint.doi or pair.preprint.openalex_id or ""
+            typer.secho(
+                f"    research-assistant expand --exclude {ident} "
+                f'--reason "preprint of {pair.version_of_record.cite_key}"',
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+
+    if fix:
+        written = 0
+        wanted = {record.cite_key: kind for record, kind in report.retracted}
+        for record in records:
+            # Cleared again when a notice is withdrawn, which is what makes the
+            # key derived rather than a claim somebody has to keep true.
+            found: str | None = wanted.get(record.cite_key)
+            if record.retracted != found and vault.update_frontmatter(
+                record.path, {"retracted": found}
+            ):
+                written += 1
+        typer.secho(f"\nSet `retracted` on {written} note(s).", fg=typer.colors.GREEN)
+
+    if report.clean:
+        typer.secho("\nNothing to report.", fg=typer.colors.GREEN)
+        return
+    raise typer.Exit(1)
 
 
 @app.command()

@@ -61,7 +61,7 @@ table view has a column and a missing value is visibly missing.
 | `code_url` | string \| null | `paper` | |
 | `citations` | int \| null | `paper` · `relink` | |
 | `open_access` | string \| null | `paper` · `relink` | OpenAlex's status, lowercased. |
-| `retracted` | string \| null | `paper` | Crossref's strongest `updated-by` notice: `retraction`, `withdrawal`, `removal`, `partial_retraction` or `expression_of_concern`. **Derived**, never set by hand, and cleared again if the notice is withdrawn. |
+| `retracted` | string \| null | `paper` · `health --fix` | Crossref's strongest `updated-by` notice: `retraction`, `withdrawal`, `removal`, `partial_retraction` or `expression_of_concern`. **Derived**, never set by hand, and cleared again if the notice is withdrawn. |
 | `topics` | list of wikilinks | **`relink`** | `[[hub note]]`. Rewritten wholesale. |
 | `cites` | list of wikilinks | **`relink`** | Rewritten wholesale, to notes that actually exist. |
 | `tags` | list | `expand` · `tidy` | See [Tags](#tags). |
