@@ -108,7 +108,7 @@ research-assistant cite-check --bib refs.bib     # keys defined, not cited
 |---|---|---|
 | `paper <doi\|openalex-id>` | Look one up and add it | `--force` |
 | `source` | Record what no index knows | `--title` `--author` `--year` `--venue` `--url` `--type` `--pdf` `--key` |
-| `expand` | Walk the citation graph one hop | `--dry-run` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
+| `expand` | Walk the citation graph one hop | `--dry-run` `--screen` `--report` `--adopt` `--include` `--exclude` `--reason` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
 | `relink` | Rebuild `cites` links and topic hubs | |
 | `tidy` | Reformat bodies, adopt PDFs, fill abstracts, restore key order | `--abstracts`/`--no-abstracts` `--bibfields` |
 | `bib --out <file>` | Regenerate the bibliography | `--check` |
@@ -126,6 +126,12 @@ Why they behave as they do:
 - **`expand` walks out from every note *not* tagged `harvested`,** so re-running
   it never quietly reaches depth 2. Drop that tag from the paper worth going
   deeper on.
+- **`expand` remembers what you turned down.** Decisions go in a sibling
+  `screening.tsv`, not in frontmatter: an exclusion is a fact about your search
+  process, not about the paper, and an excluded paper has no note to hold it
+  anyway. A note that exists always beats the ledger, and `--report` prints the
+  four PRISMA numbers plus wherever the two disagree. See
+  [`docs/screening.md`](docs/screening.md).
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
 - **`tidy --bibfields` is opt-in because it costs a request per note.** The

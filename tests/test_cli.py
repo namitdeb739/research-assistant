@@ -15,7 +15,7 @@ import pytest
 from notes import write_note
 from typer.testing import CliRunner
 
-from research_assistant import cli, graph, vault
+from research_assistant import cli, graph, screening, vault
 
 runner = CliRunner()
 
@@ -120,9 +120,7 @@ def test_select_drops_a_work_whose_doi_is_already_in_the_vault() -> None:
     fresh = {"W2": _candidate("W2")}
     works = {"W2": _work("W2", doi="10.1145/known")}
 
-    kept = cli._select(
-        fresh, works, {"10.1145/known": Path("Known.md")}, min_year=None, limit=None
-    )
+    kept = cli._select(fresh, works, {"10.1145/known": Path("Known.md")}, min_year=None)
 
     assert kept == []
 
@@ -131,12 +129,13 @@ def test_select_drops_a_work_with_no_year_when_a_floor_is_given() -> None:
     fresh = {"W2": _candidate("W2"), "W3": _candidate("W3")}
     works = {"W2": _work("W2", year=None), "W3": _work("W3", year=2021)}
 
-    kept = cli._select(fresh, works, {}, min_year=2015, limit=None)
+    kept = cli._select(fresh, works, {}, min_year=2015)
 
     assert [c.openalex_id for c in kept] == ["W3"]
 
 
-def test_select_caps_after_sorting_so_the_newest_survive() -> None:
+def test_select_sorts_newest_first_and_leaves_the_cap_to_the_caller() -> None:
+    """`--limit` defers rather than decides, so a deferred paper gets no row."""
     fresh = {ident: _candidate(ident) for ident in ("W2", "W3", "W4")}
     works = {
         "W2": _work("W2", year=2015),
@@ -144,14 +143,14 @@ def test_select_caps_after_sorting_so_the_newest_survive() -> None:
         "W4": _work("W4", year=2019),
     }
 
-    kept = cli._select(fresh, works, {}, min_year=None, limit=2)
+    kept = cli._select(fresh, works, {}, min_year=None)
 
-    assert [c.openalex_id for c in kept] == ["W3", "W4"]
+    assert [c.openalex_id for c in kept] == ["W3", "W4", "W2"]
 
 
 def test_select_skips_a_candidate_openalex_no_longer_returns() -> None:
     """A merged or deleted work simply does not come back in the batch."""
-    kept = cli._select({"W9": _candidate("W9")}, {}, {}, min_year=None, limit=None)
+    kept = cli._select({"W9": _candidate("W9")}, {}, {}, min_year=None)
 
     assert kept == []
 
@@ -323,6 +322,129 @@ def test_tidy_adopts_a_hand_saved_pdf_only_when_the_note_claims_none(
     runner.invoke(cli.app, ["--papers-dir", str(papers), "tidy", "--no-abstracts"])
 
     assert vault.read_frontmatter(note)["pdf"] == "[[maioli2021alfred.pdf]]"
+
+
+def _report_count(output: str, label: str) -> int:
+    """The number on a `--report` reconciliation line, ignoring its padding."""
+    for line in output.splitlines():
+        if label in line:
+            return int(line.rsplit(maxsplit=1)[-1])
+    raise AssertionError(f"{label!r} not in report")
+
+
+def test_a_note_that_exists_beats_an_exclude_row(tmp_path: Path) -> None:
+    """Adding it *was* the change of mind, so the note wins and --report says so."""
+    papers = tmp_path / "papers"
+    note = write_note(papers, "Alfred", key="maioli2021alfred", doi="10.1/a")
+    vault.update_frontmatter(note, {"openalex_id": "W1"})
+    screening.append(
+        papers,
+        [
+            screening.Decision(
+                decided=screening.now(),
+                decision=screening.EXCLUDE,
+                openalex_id="W1",
+                doi="10.1/a",
+                reason="thought better of it",
+            )
+        ],
+    )
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--report"])
+
+    assert result.exit_code == 0
+    assert _report_count(result.stdout, "excluded, but a note exists") == 1
+
+
+def test_report_names_the_notes_deleted_by_hand(tmp_path: Path) -> None:
+    """The deletion is the decision; the ledger's job is only not to undo it."""
+    papers = tmp_path / "papers"
+    papers.mkdir(parents=True)
+    screening.append(
+        papers,
+        [
+            screening.Decision(
+                decided=screening.now(),
+                decision=screening.INCLUDE,
+                openalex_id="W9",
+                doi="10.1/gone",
+                reason="adopted",
+            )
+        ],
+    )
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--report"])
+
+    assert _report_count(result.stdout, "included, but no note exists") == 1
+    assert "--exclude W9" in result.stdout
+    assert "deleted by hand" in result.stdout
+
+
+def test_adopt_writes_one_row_per_note_and_refuses_twice(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    a = write_note(papers, "Alfred", key="maioli2021alfred", doi="10.1/a")
+    write_note(papers, "Datasheet", key="acme2020ds")  # no identifier, skipped
+    vault.update_frontmatter(a, {"openalex_id": "W1"})
+
+    first = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--adopt"])
+    second = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--adopt"])
+
+    assert first.exit_code == 0
+    assert second.exit_code == 1
+    ledger = screening.load(papers)
+    assert len(ledger.rows) == 1
+    assert ledger.rows[0].reason == "adopted"
+
+
+def test_excluding_needs_a_reason(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir(parents=True)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "expand", "--exclude", "W1"]
+    )
+
+    assert result.exit_code == 1
+    assert "needs --reason" in result.output
+
+
+def test_recording_an_exclusion_then_including_it_again(tmp_path: Path) -> None:
+    """Un-excluding is a new row, which is what makes the file append-only."""
+    papers = tmp_path / "papers"
+    papers.mkdir(parents=True)
+
+    runner.invoke(
+        cli.app,
+        [
+            "--papers-dir",
+            str(papers),
+            "expand",
+            "--exclude",
+            "W1",
+            "--reason",
+            "survey",
+        ],
+    )
+    assert screening.load(papers).decided(openalex_id="W1", doi=None)
+
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--include", "W1"])
+
+    ledger = screening.load(papers)
+    found = ledger.lookup(openalex_id="W1", doi=None)
+    assert found is not None
+    assert found.decision == screening.INCLUDE
+    assert len(ledger.rows) == 2
+
+
+def test_only_one_terminal_mode_at_a_time(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir(parents=True)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "expand", "--report", "--adopt"]
+    )
+
+    assert result.exit_code == 1
 
 
 def test_cited_keys_reads_every_cite_command_and_splits_on_commas() -> None:

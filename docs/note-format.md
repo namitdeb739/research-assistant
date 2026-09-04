@@ -22,9 +22,12 @@ tool you point at the folder all depend on it.
 ../topics/
 ├── Energy Harvesting.md     generated hub notes, one per shared theme
 └── …
+../screening.tsv             what was looked at and turned down
 ```
 
-`pdfs/` and `topics/` are **siblings** of the papers folder, not children of it.
+`pdfs/`, `topics/` and `screening.tsv` are **siblings** of the papers folder,
+not children of it. The ledger is not part of this format and has its own:
+[`docs/screening.md`](screening.md).
 
 A note is named for its **title**, sanitised for the filesystem; a PDF is named
 for its **cite key**. So the filename guards nothing about the key: two papers

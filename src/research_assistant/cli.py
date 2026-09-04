@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import collections
+import datetime as dt
 import json
 import re
+from dataclasses import dataclass
 
 # Typer resolves these annotations at runtime through get_type_hints(), so
 # `Path` cannot move into the type-checking block despite only appearing in
@@ -15,7 +17,15 @@ from typing import TYPE_CHECKING, Annotated, Any
 import httpx
 import typer
 
-from research_assistant import bibtex, graph, highlights, search, sources, vault
+from research_assistant import (
+    bibtex,
+    graph,
+    highlights,
+    screening,
+    search,
+    sources,
+    vault,
+)
 from research_assistant.models import Paper
 
 if TYPE_CHECKING:
@@ -391,6 +401,156 @@ def _work_doi(work: dict[str, Any]) -> str | None:
     return doi.strip().removeprefix("https://doi.org/").lower()
 
 
+def _decision_for(
+    candidate: graph.Candidate,
+    works: dict[str, dict[str, Any]],
+    stamped: str,
+    decision: str,
+    reason: str,
+    record: Paper | None = None,
+) -> screening.Decision:
+    """One ledger row for one candidate, labelled from whatever metadata is here."""
+    work = works.get(candidate.openalex_id, {})
+    year = work.get("publication_year")
+    return screening.Decision(
+        decided=stamped,
+        decision=decision,
+        openalex_id=candidate.openalex_id,
+        # The fetched work is the only place a backward candidate's DOI appears.
+        doi=candidate.doi or _work_doi(work),
+        year=year if isinstance(year, int) else None,
+        via=tuple(sorted(candidate.provenance)),
+        seeds=tuple(sorted(candidate.seeds)),
+        reason=reason,
+        title=record.title if record else str(work.get("title") or ""),
+    )
+
+
+def _adopt_ledger(papers_dir: Path, ledger: screening.Ledger) -> int:
+    """Seed the ledger from a vault that predates it. Every note is an inclusion."""
+    if ledger.rows:
+        typer.secho(
+            f"{ledger.path} already has {len(ledger.rows)} row(s); "
+            "adopting again would double-count.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return 1
+
+    rows: list[screening.Decision] = []
+    for path in sorted(papers_dir.glob("*.md")):
+        front = vault.read_frontmatter(path)
+        openalex_id = front.get("openalex_id")
+        doi = front.get("doi")
+        if not openalex_id and not doi:
+            continue
+        year = front.get("year")
+        rows.append(
+            screening.Decision(
+                # The file's own mtime: when the decision was actually made.
+                decided=dt.datetime.fromtimestamp(path.stat().st_mtime, dt.UTC)
+                .replace(microsecond=0)
+                .isoformat(),
+                decision=screening.INCLUDE,
+                openalex_id=str(openalex_id) if openalex_id else None,
+                doi=str(doi).lower() if doi else None,
+                year=year if isinstance(year, int) else None,
+                # The history of these decisions is unrecoverable, and saying
+                # "adopted" is more honest than inventing one.
+                reason="adopted",
+                title=str(front.get("title") or ""),
+            )
+        )
+    screening.append(papers_dir, rows)
+    typer.secho(
+        f"Adopted {len(rows)} note(s) into {screening.ledger_path(papers_dir)}.",
+        fg=typer.colors.GREEN,
+    )
+    return 0
+
+
+def _record_decisions(
+    papers_dir: Path, include: Sequence[str], exclude: Sequence[str], reason: str
+) -> int:
+    """Record decisions for ids named on the command line."""
+    wanted = [
+        (sources.as_openalex_id(raw) or None, raw) for raw in [*include, *exclude]
+    ]
+    stamped = screening.now()
+    rows = [
+        screening.Decision(
+            decided=stamped,
+            decision=screening.INCLUDE if raw in set(include) else screening.EXCLUDE,
+            openalex_id=ident,
+            doi=None if ident else sources.normalize_doi(raw),
+            reason=reason,
+        )
+        for ident, raw in wanted
+    ]
+    screening.append(papers_dir, rows)
+    typer.secho(f"Recorded {len(rows)} decision(s).", fg=typer.colors.GREEN)
+    return 0
+
+
+def _report_screening(papers_dir: Path, ledger: screening.Ledger) -> int:
+    """The four PRISMA numbers, and where the vault and the ledger disagree."""
+    by_doi, by_openalex = vault.index(papers_dir)
+    included = len(list(papers_dir.glob("*.md")))
+
+    def has_note(row: screening.Decision) -> bool:
+        return bool(
+            (row.openalex_id and row.openalex_id in by_openalex)
+            or (row.doi and row.doi in by_doi)
+        )
+
+    standing = [
+        row
+        for row in ledger.rows
+        if ledger.lookup(openalex_id=row.openalex_id, doi=row.doi) is row
+    ]
+    excluded = [r for r in standing if r.decision == screening.EXCLUDE]
+    pending = [r for r in standing if r.decision == screening.PENDING]
+    screened = len(excluded) + len(
+        [r for r in standing if r.decision == screening.INCLUDE]
+    )
+
+    unrecorded = included - len([r for r in standing if has_note(r)])
+    contradicted = [r for r in excluded if has_note(r)]
+    vanished = [
+        r for r in standing if r.decision == screening.INCLUDE and not has_note(r)
+    ]
+
+    typer.secho(
+        f"Identified {len(standing) + max(unrecorded, 0):>5}   "
+        "distinct works ever seen\n"
+        f"Screened   {screened:>5}   carrying a standing decision\n"
+        f"Excluded   {len(excluded):>5}\n"
+        f"Included   {included:>5}   notes in the vault\n"
+        f"Pending    {len(pending):>5}   awaiting a decision",
+        fg=typer.colors.CYAN,
+    )
+    typer.echo("")
+    typer.echo(f"  in the vault, not in the ledger   {max(unrecorded, 0):>4}")
+    typer.echo(f"  excluded, but a note exists       {len(contradicted):>4}")
+    typer.echo(f"  included, but no note exists      {len(vanished):>4}")
+    typer.echo(f"  rows the parser could not read    {ledger.unreadable:>4}")
+
+    if unrecorded > 0 and not ledger.rows:
+        typer.secho(
+            "\nThe ledger is empty. Seed it with `expand --adopt`.",
+            fg=typer.colors.YELLOW,
+        )
+    for row in vanished[:5]:
+        # Deleting the note *was* the decision; the ledger's job is only not to
+        # undo it. The row is now wrong, but only you know why it went.
+        ident = row.openalex_id or row.doi or ""
+        typer.secho(
+            f'\n  expand --exclude {ident} --reason "deleted by hand"',
+            fg=typer.colors.YELLOW,
+        )
+    return 0
+
+
 @app.command()
 def expand(
     backward: Annotated[
@@ -414,6 +574,27 @@ def expand(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="List candidates, write nothing")
     ] = False,
+    screen: Annotated[
+        bool,
+        typer.Option("--screen", help="Record candidates as pending, write no notes"),
+    ] = False,
+    include: Annotated[
+        list[str] | None,
+        typer.Option("--include", help="Record a decision to include these ids"),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Record a decision to exclude these ids"),
+    ] = None,
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why; required with --exclude")
+    ] = None,
+    report: Annotated[
+        bool, typer.Option("--report", help="Reconcile the vault against the ledger")
+    ] = False,
+    adopt: Annotated[
+        bool, typer.Option("--adopt", help="Seed the ledger from the existing vault")
+    ] = False,
 ) -> None:
     """Add the papers around the vault: what it cites, cites it, and near it.
 
@@ -425,6 +606,38 @@ def expand(
     if not papers_dir.is_dir():
         typer.secho(f"{papers_dir} does not exist.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
+
+    terminal = [dry_run, screen, report, adopt, bool(include or exclude)]
+    if sum(terminal) > 1:
+        typer.secho(
+            "Give one of --dry-run, --screen, --report, --adopt, "
+            "or --include/--exclude.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    if exclude and not reason:
+        typer.secho(
+            "--exclude needs --reason: a decision with no reason is not a record.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        ledger = screening.load(papers_dir)
+    except screening.ScreeningError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    if adopt:
+        raise typer.Exit(_adopt_ledger(papers_dir, ledger))
+    if report:
+        raise typer.Exit(_report_screening(papers_dir, ledger))
+    if include or exclude:
+        raise typer.Exit(
+            _record_decisions(papers_dir, include or [], exclude or [], reason or "")
+        )
 
     roots = _root_notes(papers_dir)
     if not roots:
@@ -445,14 +658,21 @@ def expand(
             related=related,
         )
         by_doi, by_openalex = vault.index(papers_dir)
-        fresh = {
-            ident: candidate
-            for ident, candidate in candidates.items()
-            if ident not in by_openalex
-            and not (candidate.doi and candidate.doi in by_doi)
-        }
+        fresh: dict[str, graph.Candidate] = {}
+        screened = 0
+        for ident, candidate in candidates.items():
+            # The note check runs first: a note that exists always beats the
+            # ledger, because adding it *was* the change of mind. `--report`
+            # surfaces the disagreement rather than the code resolving it.
+            if ident in by_openalex or (candidate.doi and candidate.doi in by_doi):
+                continue
+            if ledger.decided(openalex_id=ident, doi=candidate.doi):
+                screened += 1
+                continue
+            fresh[ident] = candidate
         typer.echo(
-            f"{len(candidates)} candidate(s), {len(fresh)} not yet in the vault."
+            f"{len(candidates)} candidate(s), {len(fresh)} new, "
+            f"{screened} already screened."
         )
         if not fresh:
             raise typer.Exit(0)
@@ -461,18 +681,51 @@ def expand(
             graph.bare_id(str(work.get("id", ""))): work
             for work in graph.fetch_works(sorted(fresh), client=client)
         }
-        selected = _select(fresh, works, by_doi, min_year=min_year, limit=limit)
+        kept = _select(fresh, works, by_doi, ledger, min_year=min_year)
+        selected = kept[:limit] if limit is not None else kept
+        deferred = len(kept) - len(selected)
 
-        if dry_run:
+        if dry_run or screen:
             _print_candidates(selected, works)
+            if deferred:
+                typer.secho(
+                    f"  … {deferred} more deferred by --limit",
+                    fg=typer.colors.BRIGHT_BLACK,
+                )
+        if dry_run:
             typer.secho(
                 f"\nDry run: {len(selected)} note(s) would be written.",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(0)
+        if screen:
+            stamped = screening.now()
+            written_rows = screening.append(
+                papers_dir,
+                [
+                    _decision_for(c, works, stamped, screening.PENDING, "")
+                    for c in selected
+                ],
+            )
+            typer.secho(
+                f"\nRecorded {written_rows} candidate(s) as pending. "
+                f"Decide with `expand --include` / `--exclude`.",
+                fg=typer.colors.GREEN,
+            )
+            raise typer.Exit(0)
 
         written, no_pdf = _write_notes(
             selected, works, papers_dir=papers_dir, client=client, pdfs=pdfs
+        )
+        stamped = screening.now()
+        screening.append(
+            papers_dir,
+            [
+                _decision_for(
+                    entry.candidate, works, stamped, screening.INCLUDE, "", entry.record
+                )
+                for entry in written
+            ],
         )
 
     for path, front in roots:
@@ -516,11 +769,16 @@ def _select(
     fresh: dict[str, graph.Candidate],
     works: dict[str, dict[str, Any]],
     by_doi: dict[str, Path],
+    ledger: screening.Ledger | None = None,
     *,
     min_year: int | None,
-    limit: int | None,
 ) -> list[graph.Candidate]:
-    """Apply the year filter, drop works already present under a DOI, then cap."""
+    """Apply the year filter and drop works already present or already screened.
+
+    Does *not* cap: `--limit` defers rather than decides, so the caller slices
+    the result and can report what it deferred without writing a ledger row for
+    a paper nobody judged.
+    """
     kept: list[graph.Candidate] = []
     for ident, candidate in fresh.items():
         work = works.get(ident)
@@ -529,6 +787,11 @@ def _select(
         doi = _work_doi(work)
         if doi and doi in by_doi:
             continue  # the candidate carried no DOI but the fetched work does
+        # Same second chance for the ledger. A backward or related candidate
+        # always arrives with `doi=None`, so this is the only place its DOI is
+        # ever known, and an exclusion recorded against the DOI must still bite.
+        if ledger is not None and ledger.decided(openalex_id=ident, doi=doi):
+            continue
         year = work.get("publication_year")
         if min_year is not None and (not isinstance(year, int) or year < min_year):
             continue
@@ -539,7 +802,7 @@ def _select(
             works[c.openalex_id].get("title") or "",
         )
     )
-    return kept[:limit] if limit is not None else kept
+    return kept
 
 
 def _print_candidates(
@@ -553,6 +816,16 @@ def _print_candidates(
         typer.echo(f"  {year}  [{routes}]  {title[:88]}")
 
 
+@dataclass(frozen=True, slots=True)
+class Written:
+    """A note `expand` just created, and what it took to create it."""
+
+    path: Path
+    key: str
+    candidate: graph.Candidate
+    record: Paper
+
+
 def _write_notes(
     selected: Sequence[graph.Candidate],
     works: dict[str, dict[str, Any]],
@@ -560,9 +833,9 @@ def _write_notes(
     papers_dir: Path,
     client: httpx.Client,
     pdfs: bool,
-) -> tuple[list[Path], list[str]]:
+) -> tuple[list[Written], list[str]]:
     """Resolve each candidate against Crossref and write its note."""
-    written: list[Path] = []
+    written: list[Written] = []
     no_pdf: list[str] = []
     # Seeded from the vault, not empty: an unseeded set only stops two notes in
     # one run colliding, and says nothing about the two hundred already there.
@@ -605,7 +878,7 @@ def _write_notes(
         except vault.VaultError as exc:
             typer.secho(f"  [{position}] skipped: {exc}", fg=typer.colors.YELLOW)
             continue
-        written.append(path)
+        written.append(Written(path=path, key=key, candidate=candidate, record=record))
         typer.echo(f"  [{position}/{len(selected)}] {path.name}")
     return written, no_pdf
 
