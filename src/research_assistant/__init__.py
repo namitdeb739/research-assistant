@@ -1,1 +1,1 @@
-"""Deterministic reference management: Crossref/OpenAlex -> Obsidian -> BibTeX."""
+"""Reference management for an Obsidian vault: Crossref/OpenAlex -> notes -> BibTeX."""

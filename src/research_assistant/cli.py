@@ -1,4 +1,4 @@
-"""Deterministic reference management: Crossref/OpenAlex to Obsidian to BibTeX."""
+"""Reference management for an Obsidian vault: Crossref/OpenAlex to notes to BibTeX."""
 
 from __future__ import annotations
 
