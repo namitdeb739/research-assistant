@@ -99,7 +99,7 @@ disk. Run it before making any coverage claim.
 | `expand` | Walk the citation graph one hop | `--dry-run` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
 | `relink` | Rebuild `cites` links and topic hubs | |
 | `tidy` | Reformat bodies, adopt PDFs, fill abstracts | `--abstracts`/`--no-abstracts` |
-| `bib --out <file>` | Regenerate the bibliography | |
+| `bib --out <file>` | Regenerate the bibliography | `--check` |
 
 Why they behave as they do:
 
@@ -116,6 +116,12 @@ Why they behave as they do:
   deeper on.
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
+- **`bib` refuses to write a repeated cite key.** A note is named for its title
+  and a cite key is a property, so two papers can claim one key and still get
+  two filenames; BibTeX would keep one entry and a citation would point at the
+  wrong paper. `bib --check` audits without writing. It never renames, because a
+  cite key is a recorded fact and inventing one at render time would make the
+  bibliography disagree with the vault.
 - **`tidy` owns the note body.** See [what a tool may
   overwrite](docs/note-format.md#what-a-tool-may-overwrite). Section content is
   only moved, never rewritten; unknown headings are preserved.

@@ -14,7 +14,7 @@ tool you point at the folder all depend on it.
 
 ```text
 <papers-dir>/
-├── maioli2021alfred.md      one note per resource, named <cite_key>.md
+├── ALFRED - Virtual Memory….md   one note per resource, named for its title
 └── …
 ../pdfs/
 ├── maioli2021alfred.pdf     open-access PDFs, named <cite_key>.pdf
@@ -25,6 +25,11 @@ tool you point at the folder all depend on it.
 ```
 
 `pdfs/` and `topics/` are **siblings** of the papers folder, not children of it.
+
+A note is named for its **title**, sanitised for the filesystem; a PDF is named
+for its **cite key**. So the filename guards nothing about the key: two papers
+can carry one `cite_key` and still get two filenames. `bib --check` is what
+catches that.
 
 ## Frontmatter
 

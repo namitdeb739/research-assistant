@@ -1,7 +1,9 @@
 """Obsidian vault backend for the “Research Resources” database.
 
-One Markdown note per resource, named ``<cite_key>.md``, with the bibliographic
-record in YAML frontmatter. The filename is the uniqueness guard.
+One Markdown note per resource, named for its title so the folder reads in
+Obsidian, with the bibliographic record in YAML frontmatter. The cite key is a
+property, not the filename: :func:`cite_keys` is what guards its uniqueness,
+because the filename cannot.
 
 The frontmatter holds only *intrinsic* properties, facts about the resource
 itself. Judgements about it (is it any good, does it belong in related work) and
