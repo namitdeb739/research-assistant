@@ -1280,6 +1280,13 @@ def find(
             "--retracted/--not-retracted", help="Only papers that are (not) retracted"
         ),
     ] = None,
+    author: Annotated[
+        str | None, typer.Option("--author", help="Substring of an author's name")
+    ] = None,
+    expand_terms: Annotated[
+        bool,
+        typer.Option("--expand", help="Also match corpus terms sharing a long prefix"),
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", help="How many hits to print")] = 10,
     full: Annotated[
         bool, typer.Option("--full", help="Print whole notes, not snippets")
@@ -1308,11 +1315,14 @@ def find(
         min_citations=min_citations,
         has_pdf=has_pdf,
         retracted=retracted,
+        author=author,
     )
 
     text = " ".join(query or [])
     hits = (
-        search.rank(filtered, text) if text.strip() else search.by_citations(filtered)
+        search.rank(filtered, text, expand=expand_terms)
+        if text.strip()
+        else search.by_citations(filtered)
     )
 
     if as_json:

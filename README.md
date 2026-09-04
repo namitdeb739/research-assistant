@@ -76,7 +76,7 @@ skills never describe a CLI you do not have. It adds:
 
 | Command | Does | Notable flags |
 |---|---|---|
-| `find <query…>` | Ranked search, best match first | `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--retracted` `--limit` `--full` `--json` |
+| `find <query…>` | Ranked search, best match first | `--author` `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--retracted` `--expand` `--limit` `--full` `--json` |
 | `show <target…>` | Whole notes, by cite key, note name or DOI | |
 | `near <target>` | What it cites, and what in the vault cites it | |
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
@@ -84,9 +84,25 @@ skills never describe a CLI you do not have. It adds:
 | `health` | Retractions, duplicate pairs, and metadata drift | `--drift` `--no-retractions` `--no-duplicates` `--fix` |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
-authors (×1). No index, no embeddings. Terms are OR-ed and there is no stemmer,
-so `backscatter` does not match `backscattering`. With filters but no
+authors (×1). No index, no embeddings. Terms are OR-ed. With filters but no
 query, `find` lists the filtered set by citation count.
+
+The query itself takes three forms beyond bare words:
+
+| Form | Means |
+|---|---|
+| `"work stealing"` | Both words must appear adjacently. Quoting also rescues words the stopword list eats — `work`, `use`, `result`, `approach` |
+| `title:backscatter` | Score the term over that field alone. The field statistics are recomputed over it, so the scores stay comparable |
+| `--expand` | Also match longer words in the vault sharing a 5-character prefix, at half weight |
+
+`--expand` is opt-in, and stays that way. It is not a stemmer: it imposes no
+morphology, only prefixes the corpus already contains, so `backscatter` reaches
+`backscattering` while `bio` reaches nothing (the floor is longer than the
+word). Measured on a 184-note vault it is a large widening — `harvest` goes from
+6 hits to 70 — which is what you want when you typed a stem and nothing came
+back, and not what you want by default. An expansion is scored with the IDF of
+the term you typed rather than its own, or a single rare inflection would
+outrank every exact title match.
 
 `pdf` prints one absolute path on stdout and nothing else, so it pipes straight
 into a reader. `pdf --audit` reconciles what the notes claim against what is on

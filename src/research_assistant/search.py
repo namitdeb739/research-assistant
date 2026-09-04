@@ -351,14 +351,96 @@ def fields(record: Record) -> dict[str, str]:
     }
 
 
-def _bag(record: Record) -> dict[str, float]:
-    """Weighted term frequencies for one note."""
+def _bag(record: Record, scope: str | None = None) -> dict[str, float]:
+    """Weighted term frequencies for one note, or for one of its fields."""
     bag: dict[str, float] = {}
     for name, text in fields(record).items():
+        if scope is not None and name != scope:
+            continue
         weight = WEIGHTS[name]
         for token in tokenize(text):
             bag[token] = bag.get(token, 0.0) + weight
     return bag
+
+
+# `"two words"` for a phrase, `title:term` to scope to one field.
+_PHRASE = re.compile(r'"([^"]*)"')
+_SCOPED = re.compile(r"^([a-z]+):(.+)$")
+
+# Long enough that the prefix is a word rather than a syllable: `backscatter`
+# reaches `backscattering`, and `bio` does not reach `bios` because the floor is
+# longer than the word itself.
+PREFIX_FLOOR = 5
+PREFIX_WEIGHT = 0.5
+
+
+@dataclass(frozen=True, slots=True)
+class Query:
+    """A parsed query: loose terms, exact phrases, and an optional field scope."""
+
+    terms: tuple[str, ...]
+    phrases: tuple[str, ...]
+    scope: str | None
+
+    @property
+    def empty(self) -> bool:
+        return not self.terms
+
+
+def parse_query(text: str) -> Query:
+    """Pull quoted phrases and a `field:` scope out of the raw query.
+
+    A phrase keeps every word, stopwords included: ``"work stealing"`` has to
+    survive a stopword list that eats ``work``, or quoting it would be useless.
+    """
+    phrases = [
+        " ".join(match.group(1).lower().split())
+        for match in _PHRASE.finditer(text)
+        if match.group(1).strip()
+    ]
+    rest = _PHRASE.sub(" ", text)
+
+    scope: str | None = None
+    words: list[str] = []
+    for word in rest.split():
+        found = _SCOPED.match(word.lower())
+        if found and found.group(1) in WEIGHTS:
+            scope = found.group(1)
+            words.append(found.group(2))
+        else:
+            words.append(word)
+
+    terms = tokenize(" ".join(words))
+    # A phrase's own words still drive BM25, so the candidate set stays generous
+    # and the phrase acts as a filter over it rather than a second scorer.
+    for phrase in phrases:
+        terms.extend(_WORD.findall(phrase))
+    return Query(terms=tuple(terms), phrases=tuple(phrases), scope=scope)
+
+
+def _expansions(term: str, vocabulary: Iterable[str]) -> set[str]:
+    """Corpus terms sharing a long prefix with ``term``.
+
+    Not a stemmer. A suffix stripper imposes English morphology on a vocabulary
+    full of coined words; this imposes nothing but the corpus's own terms.
+    """
+    if len(term) < PREFIX_FLOOR:
+        return set()
+    prefix = term[:PREFIX_FLOOR]
+    return {
+        other
+        for other in vocabulary
+        if other != term and other.startswith(prefix) and len(other) >= len(term)
+    }
+
+
+def _holds_phrases(record: Record, phrases: Sequence[str], scope: str | None) -> bool:
+    """Whether every phrase appears verbatim in the searchable text."""
+    searchable = fields(record)
+    if scope is not None:
+        searchable = {scope: searchable.get(scope, "")}
+    haystack = " ".join(" ".join(text.lower().split()) for text in searchable.values())
+    return all(phrase in haystack for phrase in phrases)
 
 
 def _mark(text: str, terms: Iterable[str]) -> str:
@@ -420,37 +502,61 @@ def best_snippet(record: Record, terms: Sequence[str]) -> tuple[str, str]:
     return "", ""
 
 
-def rank(records: Sequence[Record], query: str) -> list[Hit]:
-    """Score every record against the query, best first. OR over the terms."""
-    terms = tokenize(query)
-    if not terms or not records:
+def rank(records: Sequence[Record], query: str, *, expand: bool = False) -> list[Hit]:
+    """Score every record against the query, best first. OR over the terms.
+
+    A quoted phrase still contributes its words to the score, then filters the
+    hits: the semantics come out right without teaching BM25 about positions.
+    """
+    parsed = parse_query(query)
+    if parsed.empty or not records:
         return []
 
-    bags = [_bag(record) for record in records]
+    # Scoped to one field, the statistics must be too, or the IDF describes a
+    # corpus the query is not searching and the scores stop being comparable.
+    bags = [_bag(record, parsed.scope) for record in records]
     lengths = [sum(bag.values()) for bag in bags]
     total = len(records)
     average = sum(lengths) / total or 1.0
-    unique = set(terms)
+
+    weighted: dict[str, float] = dict.fromkeys(parsed.terms, 1.0)
+    # An expansion is scored with the IDF of the term it came from, not its own.
+    # `backscattering` occurs in one note and `backscatter` in thirty, so its own
+    # IDF is far larger, and half of it still buries every exact title match
+    # under a paper that merely inflects the word differently.
+    source: dict[str, str] = {term: term for term in parsed.terms}
+    if expand:
+        vocabulary = {term for bag in bags for term in bag}
+        for term in parsed.terms:
+            for other in _expansions(term, vocabulary):
+                if weighted.setdefault(other, PREFIX_WEIGHT) == PREFIX_WEIGHT:
+                    source.setdefault(other, term)
+
     document_frequency = {
-        term: sum(1 for bag in bags if term in bag) for term in unique
+        term: sum(1 for bag in bags if term in bag) for term in set(source.values())
     }
 
     hits: list[Hit] = []
     for record, bag, length in zip(records, bags, lengths, strict=True):
+        if parsed.phrases and not _holds_phrases(record, parsed.phrases, parsed.scope):
+            continue
         score = 0.0
-        for term in unique:
+        for term, factor in weighted.items():
             frequency = bag.get(term, 0.0)
             if not frequency:
                 continue
-            seen = document_frequency[term]
+            seen = document_frequency[source[term]]
             idf = math.log(1 + (total - seen + 0.5) / (seen + 0.5))
             score += (
-                idf
+                factor
+                * idf
                 * (frequency * (K1 + 1))
                 / (frequency + K1 * (1 - B + B * length / average))
             )
         if score > 0:
-            field, snippet = best_snippet(record, terms)
+            # Marking has to know the expanded set too, or a snippet centres on
+            # the wrong word and the expansion looks like a bug.
+            field, snippet = best_snippet(record, sorted(weighted))
             hits.append(Hit(record, score, field, snippet))
 
     hits.sort(key=lambda hit: (-hit.score, hit.record.title.lower()))
@@ -488,6 +594,7 @@ def apply_filters(
     min_citations: int | None = None,
     has_pdf: bool | None = None,
     retracted: bool | None = None,
+    author: str | None = None,
 ) -> list[Record]:
     """Narrow the corpus before ranking.
 
@@ -517,6 +624,10 @@ def apply_filters(
         if has_pdf is not None and record.has_pdf is not has_pdf:
             continue
         if retracted is not None and bool(record.retracted) is not retracted:
+            continue
+        if author is not None and not any(
+            _matches(author, name) for name in record.authors
+        ):
             continue
         kept.append(record)
     return kept
