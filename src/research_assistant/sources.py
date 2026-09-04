@@ -352,13 +352,23 @@ def resolve_source(
     ``W2300484078`` is the only identifier Passive Wi-Fi has.
     """
     ident = as_openalex_id(raw)
-    if ident is None:
-        return resolve(raw, client=client), None
-
     owns_client = client is None
     active = client or httpx.Client(follow_redirects=True)
     try:
-        return paper_from_openalex(fetch_openalex_work(ident, client=active)), ident
+        if ident is not None:
+            return paper_from_openalex(fetch_openalex_work(ident, client=active)), ident
+
+        # The same two calls `resolve` makes, kept here so the OpenAlex id the
+        # enrichment already carries is returned rather than thrown away and
+        # re-fetched by `relink`'s backfill.
+        doi = normalize_doi(raw)
+        crossref = fetch_crossref(doi, client=active)
+        try:
+            openalex = fetch_openalex(doi, client=active)
+        except httpx.HTTPError:
+            openalex = None  # OpenAlex is enrichment only; never fail the lookup
+        found = as_openalex_id(str(openalex.get("id", ""))) if openalex else None
+        return build_paper(crossref, openalex), found
     finally:
         if owns_client:
             active.close()

@@ -198,6 +198,46 @@ def test_paper_from_openalex_prefers_the_doi_url_when_there_is_one() -> None:
     assert sources.paper_from_openalex(work).url == "https://doi.org/10.1145/3631410"
 
 
+class _StubResponse:
+    """Just enough of ``httpx.Response`` for the source lookups."""
+
+    def __init__(self, payload: dict[str, object]) -> None:
+        self._payload = payload
+        self.status_code = 200
+        self.headers: dict[str, str] = {}
+
+    def raise_for_status(self) -> None:
+        return None
+
+    def json(self) -> dict[str, object]:
+        return self._payload
+
+
+class _StubClient:
+    """Answers the Crossref lookup and the OpenAlex enrichment by URL."""
+
+    def __init__(self) -> None:
+        self.urls: list[str] = []
+
+    def get(self, url: str, **_kwargs: object) -> _StubResponse:
+        self.urls.append(url)
+        if "crossref" in url:
+            return _StubResponse(
+                {"message": {"title": ["Mementos"], "DOI": "10.1145/1993316"}}
+            )
+        return _StubResponse({"id": "https://openalex.org/W2300484078"})
+
+
+def test_resolving_a_doi_keeps_the_openalex_id_it_already_fetched() -> None:
+    """Discarding it wrote `openalex_id: null` and made `relink` re-query."""
+    client = _StubClient()
+
+    paper, openalex_id = sources.resolve_source("10.1145/1993316", client=client)  # type: ignore[arg-type]
+
+    assert paper.title == "Mementos"
+    assert openalex_id == "W2300484078"
+
+
 def test_manual_source_still_gets_a_cite_key() -> None:
     """A talk with no DOI is cited the same way anything else is."""
     paper = Paper(

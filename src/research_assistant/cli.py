@@ -317,10 +317,23 @@ HARVESTED_TAG = "harvested"
 SEED_TAG = "seed"
 
 
-def _tags_for(subfields: Sequence[str], *, harvested: bool) -> list[str]:
-    """``paper`` plus provenance plus one nested tag per OpenAlex subfield."""
+def _tags_for(
+    subfields: Sequence[str], *, harvested: bool, existing: Sequence[str] = ()
+) -> list[str]:
+    """``paper`` plus provenance plus one nested tag per OpenAlex subfield.
+
+    Tags this function does not own are carried through. ``read`` is derived
+    from the body, so an unrelated command rewriting the list must not retract
+    it until the next ``tidy`` puts it back.
+    """
     tags = ["paper", HARVESTED_TAG if harvested else SEED_TAG]
     tags.extend(f"topic/{slug}" for slug in subfields)
+    owned = {"paper", HARVESTED_TAG, SEED_TAG}
+    tags.extend(
+        tag
+        for tag in existing
+        if tag not in owned and not tag.startswith("topic/") and tag not in tags
+    )
     return tags
 
 
@@ -464,7 +477,19 @@ def expand(
 
     for path, front in roots:
         subfields = _subfields_of(front)
-        vault.update_frontmatter(path, {"tags": _tags_for(subfields, harvested=False)})
+        held = front.get("tags")
+        vault.update_frontmatter(
+            path,
+            {
+                "tags": _tags_for(
+                    subfields,
+                    harvested=False,
+                    existing=[str(tag) for tag in held]
+                    if isinstance(held, list)
+                    else (),
+                )
+            },
+        )
 
     typer.secho(
         f"\nWrote {len(written)} note(s) to {papers_dir}", fg=typer.colors.GREEN
@@ -659,7 +684,9 @@ def relink() -> None:
     )
 
 
-def _backfill_openalex_ids(papers_dir: Path) -> int:
+def _backfill_openalex_ids(
+    papers_dir: Path, *, client: httpx.Client | None = None
+) -> int:
     """Give every note with a DOI its OpenAlex id, so the linker can see it.
 
     ``paper`` records only what Crossref returns, so a note added by hand
@@ -667,8 +694,10 @@ def _backfill_openalex_ids(papers_dir: Path) -> int:
     graph. Doing this here rather than in ``paper`` keeps the single-paper path
     free of a second lookup, and repairs notes added before this existed.
     """
+    # Lowercased to match `_work_doi`, which lowercases what OpenAlex returns.
+    # A note recording its DOI in caps would otherwise never find its work.
     needing = {
-        str(front["doi"]): path
+        str(front["doi"]).lower(): path
         for path in sorted(papers_dir.glob("*.md"))
         if (front := vault.read_frontmatter(path)).get("doi")
         and not front.get("openalex_id")
@@ -676,8 +705,11 @@ def _backfill_openalex_ids(papers_dir: Path) -> int:
     if not needing:
         return 0
 
-    with httpx.Client(follow_redirects=True) as client:
+    if client is not None:
         works = graph.fetch_by_doi(sorted(needing), client=client)
+    else:
+        with httpx.Client(follow_redirects=True) as owned:
+            works = graph.fetch_by_doi(sorted(needing), client=owned)
 
     repaired = 0
     for work in works:
@@ -1044,7 +1076,9 @@ def near(
         typer.secho("    none", fg=typer.colors.BRIGHT_BLACK)
 
     # How much of this paper's bibliography `expand` has not pulled in yet.
-    total = len(record.cites) + len(unresolved)
+    # `record.cites` already holds the unresolved names, so adding them again
+    # would count every gap twice and understate the coverage.
+    total = len(record.cites)
     typer.echo(f"\n  cites, not in the vault: {len(unresolved)} of {total} unresolved")
 
 
