@@ -669,7 +669,22 @@ def relink() -> None:
         # Links, not strings: a plain label is not a node, so however well it
         # groups a table it never reaches the graph.
         linked = [vault.topic_link(topic) for topic in kept]
-        if vault.update_frontmatter(path, {"topics": linked, "cites": cites}):
+        updates: dict[str, Any] = {"topics": linked, "cites": cites}
+        # `WORK_FIELDS` already asks for these, and the response is already
+        # here, so a note's citation count stopped being a snapshot from
+        # whenever it was imported for the cost of reading three more keys.
+        count = work.get("cited_by_count")
+        if isinstance(count, int):
+            updates["citations"] = count
+        oa = work.get("open_access")
+        if isinstance(oa, dict) and isinstance(oa.get("oa_status"), str):
+            updates["open_access"] = str(oa["oa_status"]).lower()
+        best = work.get("best_oa_location")
+        if isinstance(best, dict) and isinstance(best.get("pdf_url"), str):
+            # Only when OpenAlex has one: a gap upstream must not blank a URL
+            # somebody recorded by hand.
+            updates["pdf_url"] = str(best["pdf_url"])
+        if vault.update_frontmatter(path, updates):
             changed += 1
 
     topics_dir = papers_dir.parent / vault.TOPICS_DIRNAME

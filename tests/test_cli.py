@@ -222,6 +222,54 @@ def test_relink_links_only_to_notes_that_exist_and_never_to_itself(
     assert vault.read_frontmatter(papers / "Alfred.md")["cites"] == ["[[Mementos]]"]
 
 
+def test_relink_refreshes_the_counts_it_already_fetched(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """`find --min-citations` filtered on a snapshot from import time."""
+    papers = tmp_path / "papers"
+    note = write_note(papers, "Alfred", key="maioli2021alfred", citations=10)
+    vault.update_frontmatter(note, {"openalex_id": "W1"})
+    works = [
+        {
+            "id": "https://openalex.org/W1",
+            "referenced_works": [],
+            "topics": [],
+            "cited_by_count": 350,
+            "open_access": {"oa_status": "Gold"},
+            "best_oa_location": {"pdf_url": "https://example.org/a.pdf"},
+        }
+    ]
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: works)
+
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "relink"])
+
+    front = vault.read_frontmatter(note)
+    assert front["citations"] == 350
+    assert front["open_access"] == "gold"
+    assert front["pdf_url"] == "https://example.org/a.pdf"
+
+
+def test_relink_does_not_blank_a_pdf_url_openalex_lacks(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    note = write_note(
+        papers, "Alfred", key="maioli2021alfred", pdf_url="https://mine.example/a.pdf"
+    )
+    vault.update_frontmatter(note, {"openalex_id": "W1"})
+    monkeypatch.setattr(
+        graph,
+        "fetch_works",
+        lambda *a, **k: [
+            {"id": "https://openalex.org/W1", "referenced_works": [], "topics": []}
+        ],
+    )
+
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "relink"])
+
+    assert vault.read_frontmatter(note)["pdf_url"] == "https://mine.example/a.pdf"
+
+
 def test_a_topic_one_paper_carries_earns_no_hub(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
 ) -> None:

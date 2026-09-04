@@ -54,10 +54,10 @@ table view has a column and a missing value is visibly missing.
 | `openalex_id` | string \| null | `paper` · `relink` | The citation graph's join key, and the only identifier for works with no DOI. |
 | `url` | string \| null | `paper` · `source` | Landing page, when there is no `doi.org` link to give. |
 | `pdf` | wikilink \| null | `paper` · `tidy` | `[[<cite_key>.pdf]]` once a copy is filed. `tidy` adopts a hand-saved match. |
-| `pdf_url` | string \| null | `paper` | Where the open-access copy can be fetched. |
+| `pdf_url` | string \| null | `paper` · `relink` | Where the open-access copy can be fetched. |
 | `code_url` | string \| null | `paper` | |
-| `citations` | int \| null | `paper` | |
-| `open_access` | string \| null | `paper` | OpenAlex's status, lowercased. |
+| `citations` | int \| null | `paper` · `relink` | |
+| `open_access` | string \| null | `paper` · `relink` | OpenAlex's status, lowercased. |
 | `retracted` | string \| null | `paper` | Crossref's strongest `updated-by` notice: `retraction`, `withdrawal`, `removal`, `partial_retraction` or `expression_of_concern`. **Derived**, never set by hand, and cleared again if the notice is withdrawn. |
 | `topics` | list of wikilinks | **`relink`** | `[[hub note]]`. Rewritten wholesale. |
 | `cites` | list of wikilinks | **`relink`** | Rewritten wholesale, to notes that actually exist. |
