@@ -954,6 +954,22 @@ def test_promote_refuses_to_guess_between_two_matching_titles(
     assert "2 pending candidates match 'energy'" in result.output
 
 
+def test_promoting_the_same_id_twice_reports_the_note_and_creates_nothing(
+    tmp_path: Path,
+) -> None:
+    """The row has left the pending set precisely because the first run worked."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    vault.update_frontmatter(papers / "Mementos.md", {"openalex_id": "W2"})
+    screening.append(papers, [_pending(openalex_id="W2", decision=screening.INCLUDE)])
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "W2"])
+
+    assert result.exit_code == 0
+    assert "Already in the vault" in result.stdout
+    assert len(list(papers.glob("*.md"))) == 1
+
+
 def test_promote_a_target_that_names_nothing_pending(tmp_path: Path) -> None:
     papers = tmp_path / "papers"
     papers.mkdir()

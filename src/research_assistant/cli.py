@@ -1136,12 +1136,14 @@ def _write_notes(
 
 
 def _pending_target(
-    rows: Sequence[screening.Decision], target: str
-) -> screening.Decision:
-    """The one pending candidate a target names, or an error naming the target.
+    rows: Sequence[screening.Decision], target: str, *, papers_dir: Path
+) -> screening.Decision | None:
+    """The one pending candidate a target names, or ``None`` if it is already in.
 
     Identifiers before titles, and more than one hit is never resolved by
     guessing: promoting the wrong paper writes a note and downloads a PDF.
+    Promoting something twice is not an error, though — the second run says
+    where the note is, which is what you wanted to know.
     """
     ident = sources.as_openalex_id(target)
     doi = sources.normalize_doi(target)
@@ -1165,6 +1167,17 @@ def _pending_target(
                     f"{row.title[:66]}"
                 )
             raise typer.Exit(1)
+
+    # Nothing pending. Before calling it a miss, ask the vault: promoting the
+    # same id twice is the commonest way to get here, and the row has left the
+    # pending set precisely because the first run worked.
+    by_doi, by_openalex = vault.index(papers_dir)
+    held = (by_openalex.get(ident) if ident else None) or (
+        by_doi.get(doi) if doi else None
+    )
+    if held is not None:
+        typer.secho(f"  Already in the vault at {held}", fg=typer.colors.YELLOW)
+        return None
     typer.secho(
         f"{target!r} matches no pending candidate. "
         "`reading-list` is the whole pending set.",
@@ -1234,9 +1247,11 @@ def promote(
         )
         raise typer.Exit(1)
 
-    chosen: list[screening.Decision] = [
-        _pending_target(pending, target) for target in targets or []
+    resolved = [
+        _pending_target(pending, target, papers_dir=papers_dir)
+        for target in targets or []
     ]
+    chosen: list[screening.Decision] = [row for row in resolved if row is not None]
     if all_:
         selector = _selector(
             papers_dir,
@@ -1269,7 +1284,9 @@ def promote(
         )
     chosen = [row for row in chosen if row.openalex_id]
     if not chosen:
-        raise typer.Exit(1)
+        # Every target was already in the vault: nothing to do, and nothing
+        # wrong either. Only an unusable candidate is a failure.
+        raise typer.Exit(1 if without_id else 0)
 
     by_doi, by_openalex = vault.index(papers_dir)
     stamped = screening.now()
