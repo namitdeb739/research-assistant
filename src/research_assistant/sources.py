@@ -9,32 +9,16 @@ write in Obsidian, and no index has one to give.
 from __future__ import annotations
 
 import html
-import os
 import re
-import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import httpx
 
+from research_assistant.http import USER_AGENT, get_with_retry
 from research_assistant.models import Paper
-
-if TYPE_CHECKING:
-    from collections.abc import Callable
 
 CROSSREF_API = "https://api.crossref.org/works"
 OPENALEX_API = "https://api.openalex.org/works"
-
-# Harvesting the citation graph makes hundreds of sequential calls where adding
-# one paper made two. A single transient 503 would otherwise abort the run.
-RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
-MAX_ATTEMPTS = 4
-BACKOFF_SECONDS = 1.0
-
-# Crossref asks for a contact address in the User-Agent for the polite pool. The
-# address must be the caller's own, so it comes from the environment rather than
-# being baked in: a shared literal would make everyone's traffic look like one
-# user's. Unset means no mailto, which is merely the anonymous pool, not an error.
-_USER_AGENT = os.getenv("RESEARCH_ASSISTANT_USER_AGENT", "research-assistant/0.1")
 
 _JATS_TAG = re.compile(r"<[^>]+>")
 _DOI_PREFIX = re.compile(r"^(?:https?://(?:dx\.)?doi\.org/|doi:)", re.IGNORECASE)
@@ -116,40 +100,6 @@ def _first(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
-
-
-def _retry_after(response: httpx.Response, attempt: int) -> float:
-    """Seconds to wait before retrying, honouring ``Retry-After`` if sent."""
-    header = response.headers.get("Retry-After")
-    if header:
-        try:
-            seconds: float = float(str(header))
-        except ValueError:
-            pass
-        else:
-            return seconds if seconds > 0.0 else 0.0
-    return BACKOFF_SECONDS * (2.0**attempt)
-
-
-def get_with_retry(
-    url: str,
-    *,
-    client: httpx.Client,
-    timeout: float = 30.0,
-    sleep: Callable[[float], None] = time.sleep,
-) -> httpx.Response:
-    """GET ``url``, retrying on rate limits and transient server errors.
-
-    Returns the last response either way, because the caller still decides what
-    a 404 or a 500 means and nothing is swallowed here.
-    """
-    response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
-    for attempt in range(MAX_ATTEMPTS - 1):
-        if response.status_code not in RETRY_STATUSES:
-            return response
-        sleep(_retry_after(response, attempt))
-        response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=timeout)
-    return response
 
 
 def fetch_crossref(doi: str, *, client: httpx.Client) -> dict[str, Any]:
@@ -256,7 +206,7 @@ def fetch_pdf(url: str, *, client: httpx.Client) -> bytes | None:
     only trusted if it actually starts with the PDF magic bytes.
     """
     try:
-        response = client.get(url, headers={"User-Agent": _USER_AGENT}, timeout=60.0)
+        response = client.get(url, headers={"User-Agent": USER_AGENT}, timeout=60.0)
     except httpx.HTTPError:
         return None
     if response.status_code >= 400:

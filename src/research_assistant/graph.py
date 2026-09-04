@@ -13,22 +13,19 @@ the graph never quietly walks out to depth 2. To push further, drop the
 
 from __future__ import annotations
 
-import os
 import re
+import time
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
+from research_assistant.http import get_with_retry
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Sequence
+    from collections.abc import Callable, Iterable, Iterator, Sequence
 
     import httpx
 
 OPENALEX_API = "https://api.openalex.org/works"
-
-# Crossref and OpenAlex both ask for a contact address for the polite pool. It
-# is the caller's to supply, so it comes from the environment: see the same
-# variable in :mod:`research_assistant.sources`.
-_USER_AGENT = os.getenv("RESEARCH_ASSISTANT_USER_AGENT", "research-assistant/0.1")
 
 # OpenAlex accepts an OR-joined filter of up to 50 ids per request.
 OPENALEX_MAX_IDS = 50
@@ -88,12 +85,16 @@ def chunked(values: Sequence[str], size: int = OPENALEX_MAX_IDS) -> Iterator[lis
         yield list(values[start : start + size])
 
 
-def _get(params: dict[str, str], *, client: httpx.Client) -> dict[str, Any]:
-    response = client.get(
-        OPENALEX_API,
-        params=params,
-        headers={"User-Agent": _USER_AGENT},
-        timeout=60.0,
+def _get(
+    params: dict[str, str],
+    *,
+    client: httpx.Client,
+    sleep: Callable[[float], None] = time.sleep,
+) -> dict[str, Any]:
+    # A cursor page of 200 works with a fat ``select`` is genuinely slower than a
+    # Crossref lookup, which is why the timeout is not the shared default.
+    response = get_with_retry(
+        OPENALEX_API, client=client, params=params, timeout=60.0, sleep=sleep
     )
     response.raise_for_status()
     payload = response.json()
