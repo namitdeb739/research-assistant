@@ -80,6 +80,7 @@ skills never describe a CLI you do not have. It adds:
 | `show <target…>` | Whole notes, by cite key, note name or DOI | |
 | `near <target>` | What it cites, and what in the vault cites it | |
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
+| `cite-check <file.tex…>` | Reconcile a document's `\cite` keys against the vault | `--bib` `--unused`/`--no-unused` |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
 authors (×1). No index, no embeddings. Terms are OR-ed and there is no stemmer,
@@ -89,6 +90,17 @@ query, `find` lists the filtered set by citation count.
 `pdf` prints one absolute path on stdout and nothing else, so it pipes straight
 into a reader. `pdf --audit` reconciles what the notes claim against what is on
 disk. Run it before making any coverage claim.
+
+`cite-check` is the one command that looks at what you are actually writing. It
+pulls the keys out of a `.tex` file (every `\cite` variant, optional arguments
+and comma lists included) and diffs them against the vault. A key with no note
+behind it is an unresolvable citation, so it exits non-zero; notes cited nowhere
+are only reported, because a vault is meant to be larger than any one paper.
+
+```bash
+research-assistant cite-check thesis.tex chapters/*.tex
+research-assistant cite-check --bib refs.bib     # keys defined, not cited
+```
 
 ### Write
 

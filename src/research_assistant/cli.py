@@ -1133,6 +1133,84 @@ def show(
         typer.echo("")
 
 
+# \cite, \parencite, \autocite, \textcite, \footcite, \supercite, starred or
+# not, with any number of optional [prenote][postnote] arguments before the key
+# list. The keys themselves are one capture, split on commas by the caller.
+_CITE = re.compile(
+    r"\\(?:no|foot|super|auto|paren|text|smart|full)?cite[a-zA-Z]*\*?"
+    r"(?:\[[^\]]*\])*\{([^}]*)\}"
+)
+# A .bib entry key, for --bib.
+_BIB_ENTRY = re.compile(r"^\s*@[a-zA-Z]+\s*\{\s*([^,\s]+)\s*,", re.MULTILINE)
+
+
+def cited_keys(text: str, *, bib: bool = False) -> set[str]:
+    """Every cite key a LaTeX document cites, or a ``.bib`` file defines."""
+    if bib:
+        return {match.group(1).strip() for match in _BIB_ENTRY.finditer(text)}
+    return {
+        key.strip()
+        for match in _CITE.finditer(text)
+        for key in match.group(1).split(",")
+        if key.strip()
+    }
+
+
+@app.command(name="cite-check")
+def cite_check(
+    files: Annotated[
+        list[Path], typer.Argument(help="LaTeX documents (or .bib files with --bib)")
+    ],
+    bib: Annotated[
+        bool, typer.Option("--bib", help="Read .bib entry keys instead of \\cite")
+    ] = False,
+    unused: Annotated[
+        bool, typer.Option("--unused/--no-unused", help="Also list notes cited nowhere")
+    ] = True,
+) -> None:
+    """Reconcile the cite keys in a document against the notes in the vault.
+
+    The one command that connects the vault to what is being written. A key
+    cited with no note behind it is the real error, and the exit code says so; a
+    note cited nowhere is only the gap between a reading list and an argument.
+    """
+    records = _load(_papers_dir())
+    known = {record.cite_key: record for record in records}
+
+    wanted: set[str] = set()
+    for path in files:
+        try:
+            wanted |= cited_keys(path.read_text(encoding="utf-8"), bib=bib)
+        except OSError as exc:
+            typer.secho(f"{path}: {exc.strerror}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+
+    missing = sorted(wanted - set(known))
+    typer.secho(
+        f"{len(wanted)} cite key(s) in {len(files)} file(s) · "
+        f"{len(records)} notes · {len(missing)} with no note",
+        fg=typer.colors.CYAN,
+    )
+    for key in missing:
+        typer.secho(f"  {key}", fg=typer.colors.RED)
+
+    if unused:
+        # Not an error: a vault is meant to be larger than any one paper.
+        uncited = sorted(set(known) - wanted)
+        typer.secho(
+            f"\n{len(uncited)} note(s) cited nowhere", fg=typer.colors.BRIGHT_BLACK
+        )
+        for key in uncited[:10]:
+            typer.secho(f"  {key}", fg=typer.colors.BRIGHT_BLACK)
+        if len(uncited) > 10:
+            typer.secho(
+                f"  … and {len(uncited) - 10} more", fg=typer.colors.BRIGHT_BLACK
+            )
+
+    if missing:
+        raise typer.Exit(1)
+
+
 @app.command()
 def near(
     target: Annotated[str, typer.Argument(help="Cite key, note name or DOI")],

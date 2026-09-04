@@ -325,6 +325,76 @@ def test_tidy_adopts_a_hand_saved_pdf_only_when_the_note_claims_none(
     assert vault.read_frontmatter(note)["pdf"] == "[[maioli2021alfred.pdf]]"
 
 
+def test_cited_keys_reads_every_cite_command_and_splits_on_commas() -> None:
+    tex = r"""
+    \cite{alpha2020one}
+    \parencite[see][12]{beta2021two,gamma2022three}
+    \textcite*{delta2023four}
+    \footcite{epsilon2024five}
+    """
+
+    assert cli.cited_keys(tex) == {
+        "alpha2020one",
+        "beta2021two",
+        "gamma2022three",
+        "delta2023four",
+        "epsilon2024five",
+    }
+
+
+def test_cited_keys_reads_bib_entry_keys() -> None:
+    bib = "@article{alpha2020one,\n  title = {A}\n}\n@inproceedings{ beta2021two ,\n}"
+
+    assert cli.cited_keys(bib, bib=True) == {"alpha2020one", "beta2021two"}
+
+
+def test_cite_check_fails_on_a_key_with_no_note(tmp_path: Path) -> None:
+    """The real error: a citation the bibliography cannot resolve."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Alfred", key="maioli2021alfred")
+    tex = tmp_path / "thesis.tex"
+    tex.write_text(r"\cite{maioli2021alfred,ransford2011typo}", encoding="utf-8")
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "cite-check", str(tex)]
+    )
+
+    assert result.exit_code == 1
+    assert "ransford2011typo" in result.stdout
+    assert "1 with no note" in result.stdout
+
+
+def test_cite_check_passes_when_every_key_resolves(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    write_note(papers, "Alfred", key="maioli2021alfred")
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    tex = tmp_path / "thesis.tex"
+    tex.write_text(r"\cite{maioli2021alfred}", encoding="utf-8")
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "cite-check", str(tex)]
+    )
+
+    assert result.exit_code == 0
+    assert "1 note(s) cited nowhere" in result.stdout
+    assert "ransford2011mementos" in result.stdout
+
+
+def test_cite_check_resolves_by_cite_key_not_filename(tmp_path: Path) -> None:
+    """Notes are named for their title, so `path.stem` is the wrong join."""
+    papers = tmp_path / "papers"
+    write_note(papers, "A Long Descriptive Title", key="maioli2021alfred")
+    tex = tmp_path / "thesis.tex"
+    tex.write_text(r"\cite{maioli2021alfred}", encoding="utf-8")
+
+    result = runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "cite-check", str(tex), "--no-unused"],
+    )
+
+    assert result.exit_code == 0
+
+
 def test_bib_check_reports_a_cite_key_claimed_twice(tmp_path: Path) -> None:
     papers = tmp_path / "papers"
     write_note(papers, "One paper", key="lovelace2020twin")
