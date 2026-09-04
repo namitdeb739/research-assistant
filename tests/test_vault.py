@@ -252,6 +252,21 @@ def test_index_builds_both_lookups(tmp_path: Path) -> None:
     assert by_openalex["W1"] == path
 
 
+def test_cite_keys_names_every_note_claiming_one(tmp_path: Path) -> None:
+    """The filename guard is derived from the title, so it misses key clashes."""
+    vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    twin = Paper(title="A different paper entirely", authors=("Bill Yen",), year=2023)
+    vault.create_paper(twin, "yen2023soil", papers_dir=tmp_path)
+
+    claimed = vault.cite_keys(tmp_path)
+
+    assert len(claimed["yen2023soil"]) == 2
+
+
+def test_cite_keys_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
+    assert vault.cite_keys(tmp_path / "nope") == {}
+
+
 def test_index_of_a_missing_folder_is_empty(tmp_path: Path) -> None:
     assert vault.index(tmp_path / "absent") == ({}, {})
 

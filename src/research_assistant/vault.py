@@ -379,6 +379,24 @@ def index(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     return by_doi, by_openalex
 
 
+def cite_keys(papers_dir: Path) -> dict[str, list[Path]]:
+    """Every cite key the vault claims, and the notes claiming it.
+
+    A key with two notes under it is a miscitation waiting to happen: BibTeX
+    keeps one of the entries and silently drops the other. Separate from
+    :func:`index` because the filename is the only uniqueness guard
+    :func:`create_paper` applies, and it is derived from the title, not the key.
+    """
+    claimed: dict[str, list[Path]] = {}
+    if not papers_dir.is_dir():
+        return claimed
+    for path in sorted(papers_dir.glob("*.md")):
+        key = _str(read_frontmatter(path).get("cite_key"))
+        if key:
+            claimed.setdefault(key, []).append(path)
+    return claimed
+
+
 def update_frontmatter(path: Path, updates: dict[str, Any]) -> bool:
     """Rewrite only the named frontmatter keys. Returns whether anything changed.
 

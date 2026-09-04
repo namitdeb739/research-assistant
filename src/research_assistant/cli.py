@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import collections
 import json
+import re
 
 # Typer resolves these annotations at runtime through get_type_hints(), so
 # `Path` cannot move into the type-checking block despite only appearing in
@@ -18,7 +19,7 @@ from research_assistant import bibtex, graph, highlights, search, sources, vault
 from research_assistant.models import Paper
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Container, Sequence
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -65,6 +66,13 @@ def _describe(record: Paper) -> None:
     typer.echo(f"  {record.venue or 'unknown venue'} ({record.year or 'n.d.'})")
 
 
+def _unclaimed_key(key: str, taken: Container[str]) -> str:
+    """A cite key no note in the vault already claims."""
+    while key in taken:
+        key = f"{key}a"  # two papers, same author, year and first word
+    return key
+
+
 def _existing_note(
     record: Paper, openalex_id: str | None, *, papers_dir: Path
 ) -> Path | None:
@@ -102,7 +110,12 @@ def paper(
         _describe(record)
 
         papers_dir = _papers_dir()
-        key = record.cite_key()
+        key = _unclaimed_key(record.cite_key(), vault.cite_keys(papers_dir))
+        if key != record.cite_key():
+            typer.secho(
+                f"Cite key {record.cite_key()} is taken; using {key}.",
+                fg=typer.colors.YELLOW,
+            )
         try:
             if not force:
                 existing = _existing_note(record, openalex_id, papers_dir=papers_dir)
@@ -179,7 +192,18 @@ def source(
     papers_dir = _papers_dir()
     # A corporate author has no surname, so the derived key takes the last word
     # of the organisation's name: "distribuidas2020waspmote" for Libelium.
-    cite_key = key or record.cite_key()
+    claimed = vault.cite_keys(papers_dir)
+    if key is not None:
+        cite_key = key
+        if cite_key in claimed:
+            # A hand-picked key is the point of --key, so this reports and does
+            # not repair: only you know whether the clash is the same resource.
+            typer.secho(
+                f"{cite_key} is already claimed by {claimed[cite_key][0].name}.",
+                fg=typer.colors.YELLOW,
+            )
+    else:
+        cite_key = _unclaimed_key(record.cite_key(), claimed)
     try:
         pdf_name = (
             vault.save_pdf(
@@ -220,19 +244,72 @@ def _save_pdf(
     return path.name
 
 
+_KEY_SHAPE = re.compile(r"^[a-z0-9]+$")
+
+
+def _print_key_audit(papers_dir: Path) -> bool:
+    """Report cite keys the vault cannot spell or claims twice. True if clean."""
+    claimed = vault.cite_keys(papers_dir)
+    collisions = {key: paths for key, paths in claimed.items() if len(paths) > 1}
+    malformed = sorted(key for key in claimed if not _KEY_SHAPE.match(key))
+
+    total = sum(len(paths) for paths in claimed.values())
+    typer.secho(
+        f"{total} notes · {len(claimed)} cite keys · {len(collisions)} collision(s)",
+        fg=typer.colors.CYAN,
+    )
+    for key, paths in sorted(collisions.items()):
+        typer.secho(f"  {key}", fg=typer.colors.YELLOW)
+        for path in paths:
+            typer.echo(f"    {path.name}")
+    if malformed:
+        typer.secho(
+            f"\n{len(malformed)} key(s) are not [a-z0-9]: {', '.join(malformed[:8])}",
+            fg=typer.colors.YELLOW,
+        )
+    return not collisions and not malformed
+
+
 @app.command()
 def bib(
-    out: Annotated[Path, typer.Option("--out", help="Where to write the bibliography")],
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Where to write the bibliography")
+    ] = None,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Audit the cite keys and write nothing"),
+    ] = False,
 ) -> None:
     """Regenerate a BibTeX bibliography from the Obsidian vault."""
+    papers_dir = _papers_dir()
+    if check:
+        if out is not None:
+            typer.secho(
+                "Give either --out <file> or --check.", fg=typer.colors.RED, err=True
+            )
+            raise typer.Exit(1)
+        raise typer.Exit(0 if _print_key_audit(papers_dir) else 1)
+    if out is None:
+        typer.secho(
+            "Give either --out <file> or --check.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+
     try:
-        entries = vault.read_all(papers_dir=_papers_dir())
+        entries = vault.read_all(papers_dir=papers_dir)
     except vault.VaultError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
 
+    try:
+        rendered = bibtex.render(entries)
+    except bibtex.BibtexError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        typer.secho("Run `bib --check` to see which notes.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1) from exc
+
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(bibtex.render(entries), encoding="utf-8")
+    out.write_text(rendered, encoding="utf-8")
     typer.secho(f"Wrote {len(entries)} entries to {out}", fg=typer.colors.GREEN)
 
 
@@ -462,7 +539,9 @@ def _write_notes(
     """Resolve each candidate against Crossref and write its note."""
     written: list[Path] = []
     no_pdf: list[str] = []
-    seen_keys: set[str] = set()
+    # Seeded from the vault, not empty: an unseeded set only stops two notes in
+    # one run colliding, and says nothing about the two hundred already there.
+    seen_keys: set[str] = set(vault.cite_keys(papers_dir))
 
     for position, candidate in enumerate(selected, start=1):
         work = works[candidate.openalex_id]
@@ -477,9 +556,7 @@ def _write_notes(
             # Crossref does not know it, or has no DOI to know it by.
             record = sources.paper_from_openalex(work)
 
-        key = record.cite_key()
-        while key in seen_keys:
-            key = f"{key}a"  # two papers, same author, year and first word
+        key = _unclaimed_key(record.cite_key(), seen_keys)
         seen_keys.add(key)
 
         topics, subfields = graph.topics_of(work)

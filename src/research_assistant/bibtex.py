@@ -9,6 +9,11 @@ if TYPE_CHECKING:
 
     from research_assistant.models import Paper
 
+
+class BibtexError(Exception):
+    """Raised when the notes cannot produce a usable bibliography."""
+
+
 HEADER = (
     "% Generated from the Obsidian “Research Resources” notes "
     "— do not hand-edit.\n"
@@ -72,8 +77,30 @@ def render_entry(paper: Paper, key: str) -> str:
     return f"@{paper.entry_type}{{{key},\n{body}\n}}\n"
 
 
+def duplicate_keys(entries: Iterable[tuple[Paper, str]]) -> dict[str, list[Paper]]:
+    """Cite keys claimed by more than one paper, in the order they were read."""
+    claimed: dict[str, list[Paper]] = {}
+    for paper, key in entries:
+        claimed.setdefault(key, []).append(paper)
+    return {key: papers for key, papers in claimed.items() if len(papers) > 1}
+
+
 def render(entries: Iterable[tuple[Paper, str]]) -> str:
     """Render a full ``.bib`` file from ``(paper, cite_key)`` pairs."""
     ordered = sorted(entries, key=lambda pair: pair[1].lower())
+    repeated = duplicate_keys(ordered)
+    if repeated:
+        # Both entries would be written and BibTeX would keep one of them, so a
+        # citation would silently point at the wrong paper. Renaming here is not
+        # the fix: a cite key is a recorded fact, and inventing one at render
+        # time would make the bibliography disagree with the vault.
+        shown = "; ".join(
+            f"{key} ({', '.join(paper.title for paper in papers)})"
+            for key, papers in sorted(repeated.items())
+        )
+        raise BibtexError(
+            f"{len(repeated)} cite key(s) claimed by more than one note: {shown}. "
+            f"Give one of them a different key."
+        )
     blocks = [render_entry(paper, key) for paper, key in ordered]
     return HEADER + "\n" + "\n".join(blocks)

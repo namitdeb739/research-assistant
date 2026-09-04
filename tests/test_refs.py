@@ -86,6 +86,26 @@ def test_render_sorts_by_cite_key_and_keeps_header() -> None:
     assert out.index("alpha2019b") < out.index("zeta2020a")
 
 
+def test_render_refuses_to_write_a_bibliography_with_a_repeated_key() -> None:
+    """BibTeX keeps one entry of two, so a citation would point at the wrong paper."""
+    other = Paper(title="Something else entirely", authors=("John Madden",), year=2026)
+
+    with pytest.raises(bibtex.BibtexError) as caught:
+        bibtex.render([(ENTS, "madden2026ents"), (other, "madden2026ents")])
+
+    assert "madden2026ents" in str(caught.value)
+    assert "Something else entirely" in str(caught.value)
+
+
+def test_duplicate_keys_reports_only_the_repeated_ones() -> None:
+    repeated = bibtex.duplicate_keys(
+        [(ENTS, "alpha2019b"), (ENTS, "zeta2020a"), (ENTS, "alpha2019b")]
+    )
+
+    assert list(repeated) == ["alpha2019b"]
+    assert len(repeated["alpha2019b"]) == 2
+
+
 def test_strip_jats_flattens_markup() -> None:
     raw = "<jats:p>Soil <jats:italic>microbial</jats:italic>  cells.</jats:p>"
     assert sources._strip_jats(raw) == "Soil microbial cells."
