@@ -189,3 +189,120 @@ def test_counts_fold_a_work_recorded_under_both_identifiers(tmp_path: Path) -> N
 
     assert tally[screening.INCLUDE] == 1
     assert tally[screening.EXCLUDE] == 1
+
+
+def test_a_v2_row_round_trips_every_triage_column() -> None:
+    written = row(
+        openalex_id="W1",
+        doi="10.1145/abc",
+        year=2011,
+        citations=812,
+        via=("reference", "citation"),
+        seeds=("W9", "W8"),
+        pdf_url="https://example.org/a.pdf",
+        venue="ASPLOS",
+        authors=("Benjamin Ransford", "Jacob Sorber", "Kevin Fu"),
+        reason="survey, not primary",
+        title="Mementos",
+    )
+
+    parsed = screening.parse_row(screening.format_row(written))
+
+    assert parsed == written
+
+
+def test_format_row_always_writes_thirteen_columns() -> None:
+    """A v2 writer never emits the 10-12 window, so that window means v1."""
+    assert screening.format_row(row()).count("\t") == 12
+    assert len(screening.HEADER) == 13
+    assert len(screening.HEADER_V1) == 9
+
+
+def test_a_v1_row_reads_with_the_triage_columns_blank() -> None:
+    """Nine fields is v1 by definition, and is never rewritten."""
+    parsed = screening.parse_row(
+        "2026-09-04T11:20:03+00:00\tpending\tW1\t10.1/a\t2017"
+        "\treference\tW9\t\tA Survey"
+    )
+
+    assert parsed is not None
+    assert parsed.year == 2017
+    assert parsed.via == ("reference",)
+    assert parsed.title == "A Survey"
+    assert (parsed.citations, parsed.pdf_url, parsed.venue, parsed.authors) == (
+        None,
+        None,
+        "",
+        (),
+    )
+
+
+def test_v1_and_v2_rows_coexist_in_one_file(tmp_path: Path) -> None:
+    """Append-only means the file is mixed-version, not migrated."""
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    path = screening.ledger_path(papers)
+    path.write_text(
+        "# research-assistant screening v1\n"
+        + "\t".join(screening.HEADER_V1)
+        + "\n"
+        + "2026-01-01T00:00:00+00:00\tpending\tW1\t\t2017\treference\tW9\t\tOld\n",
+        encoding="utf-8",
+    )
+    screening.append(
+        papers, [row(openalex_id="W2", decision=screening.PENDING, citations=99)]
+    )
+
+    ledger = screening.load(papers)
+
+    assert ledger.unreadable == 0
+    assert [r.openalex_id for r in ledger.rows] == ["W1", "W2"]
+    assert (ledger.rows[0].citations, ledger.rows[1].citations) == (None, 99)
+    # The existing file keeps its own version line; only new files get v2's.
+    assert path.read_text(encoding="utf-8").startswith(
+        "# research-assistant screening v1\n"
+    )
+
+
+def test_a_hand_split_v1_title_still_lands_in_the_title() -> None:
+    """Ten to twelve fields is a v1 row someone typed a tab into, not a v2 one."""
+    parsed = screening.parse_row(
+        "2026-09-04T11:20:03+00:00\texclude\tW1\t\t2017\treference\tW9\twhy\tA\tsplit"
+    )
+
+    assert parsed is not None
+    assert parsed.title == "A\tsplit"
+    assert parsed.citations is None
+
+
+def test_pending_returns_only_rows_whose_standing_decision_is_pending(
+    tmp_path: Path,
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(
+        papers,
+        [
+            row(openalex_id="W1", decision=screening.PENDING, title="still waiting"),
+            row(openalex_id="W2", decision=screening.PENDING, title="decided later"),
+            row(openalex_id="W3", decision=screening.EXCLUDE),
+        ],
+    )
+    screening.append(papers, [row(openalex_id="W2", decision=screening.INCLUDE)])
+
+    still = screening.pending(screening.load(papers))
+
+    assert [r.openalex_id for r in still] == ["W1"]
+
+
+def test_seen_counts_a_pending_row_and_decided_does_not(tmp_path: Path) -> None:
+    """The rule that stops the ledger growing by the candidate set every run."""
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [row(openalex_id="W1", decision=screening.PENDING)])
+
+    ledger = screening.load(papers)
+
+    assert ledger.seen(openalex_id="W1", doi=None)
+    assert not ledger.decided(openalex_id="W1", doi=None)
+    assert not ledger.seen(openalex_id="W2", doi=None)

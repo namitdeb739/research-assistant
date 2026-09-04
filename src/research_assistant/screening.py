@@ -18,6 +18,11 @@ editor. Nothing here opens the file for writing except :func:`append`, which
 opens it for appending; there is no rewrite path and no compaction. A superseded
 decision is a new row, and :func:`load` folds by last-row-wins -- the opposite
 of ``vault.index``'s ``setdefault``, and on purpose.
+
+That promise is also why the row grew from nine columns to thirteen without a
+migration: :func:`parse_row` sniffs the version off the field count, so a file
+written before v2 keeps its own version line and header and simply gains v2
+rows below them.
 """
 
 from __future__ import annotations
@@ -32,12 +37,12 @@ if TYPE_CHECKING:
     from pathlib import Path
 
 SCREENING_FILENAME: Final = "screening.tsv"
-VERSION_LINE: Final = "# research-assistant screening v1"
+VERSION_LINE: Final = "# research-assistant screening v2"
 
-# Fixed-alphabet columns first, the two free-text ones last, `title` last of
-# all. That ordering *is* the escaping strategy: no csv module and no quoting,
-# so a stray tab introduced by hand can only ever damage the readable column.
-HEADER: Final[tuple[str, ...]] = (
+# Fixed-alphabet columns first, the free-text ones last, `title` last of all.
+# That ordering *is* the escaping strategy: no csv module and no quoting, so a
+# stray tab introduced by hand can only ever damage the readable column.
+HEADER_V1: Final[tuple[str, ...]] = (
     "decided",
     "decision",
     "openalex_id",
@@ -45,6 +50,26 @@ HEADER: Final[tuple[str, ...]] = (
     "year",
     "via",
     "seeds",
+    "reason",
+    "title",
+)
+
+# v2 adds the four columns the reading list renders, so triage reads off the
+# ledger without a second lookup. Rows are sniffed by field count rather than
+# migrated: `screening.py` has no rewrite path, and gaining one for this would
+# be a worse trade than a branch in the parser.
+HEADER: Final[tuple[str, ...]] = (
+    "decided",
+    "decision",
+    "openalex_id",
+    "doi",
+    "year",
+    "citations",
+    "via",
+    "seeds",
+    "pdf_url",
+    "venue",
+    "authors",
     "reason",
     "title",
 )
@@ -72,8 +97,12 @@ class Decision:
     openalex_id: str | None = None
     doi: str | None = None
     year: int | None = None
+    citations: int | None = None
     via: tuple[str, ...] = ()
     seeds: tuple[str, ...] = ()
+    pdf_url: str | None = None
+    venue: str = ""
+    authors: tuple[str, ...] = ()
     reason: str = ""
     title: str = ""
 
@@ -102,6 +131,15 @@ class Ledger:
         found = self.lookup(openalex_id=openalex_id, doi=doi)
         return found is not None and found.decision in {INCLUDE, EXCLUDE}
 
+    def seen(self, *, openalex_id: str | None, doi: str | None) -> bool:
+        """Whether any row stands, ``pending`` included.
+
+        What `expand` asks before recording a candidate. A pending row now
+        renders in the reading list, so re-offering it would only grow the
+        ledger by the whole candidate set on every run.
+        """
+        return self.lookup(openalex_id=openalex_id, doi=doi) is not None
+
 
 def now() -> str:
     """A full UTC timestamp, so ordering is total and file order only breaks ties."""
@@ -120,33 +158,66 @@ def ledger_path(papers_dir: Path) -> Path:
 
 
 def format_row(decision: Decision) -> str:
-    """One tab-separated line, terminated. Pure."""
+    """One tab-separated line, terminated. Always v2's thirteen columns. Pure."""
     fields = (
         decision.decided,
         decision.decision,
         decision.openalex_id or "",
         decision.doi or "",
         "" if decision.year is None else str(decision.year),
+        "" if decision.citations is None else str(decision.citations),
         ";".join(decision.via),
         ";".join(decision.seeds),
+        decision.pdf_url or "",
+        _flat(decision.venue, limit=_TITLE_LIMIT),
+        _flat("; ".join(decision.authors), limit=_TITLE_LIMIT),
         _flat(decision.reason),
         _flat(decision.title, limit=_TITLE_LIMIT),
     )
     return "\t".join(_flat(f) for f in fields) + "\n"
 
 
+def _rejoin(parts: list[str], width: int) -> list[str]:
+    """Pad to ``width``, or fold every extra field back into the last one."""
+    if len(parts) < width:
+        return parts + [""] * (width - len(parts))
+    # Extra tabs can only have come from a hand-edited title.
+    return [*parts[: width - 1], "\t".join(parts[width - 1 :])]
+
+
 def parse_row(line: str) -> Decision | None:
-    """One line back into a decision, or ``None`` if it cannot be read. Pure."""
+    """One line back into a decision, or ``None`` if it cannot be read. Pure.
+
+    Version-sniffed by field count, so v1 and v2 rows coexist in one file and
+    append-only is never broken: exactly 9 or a hand-split 10-12 is v1, and 13
+    or more is v2. A v2 writer always emits exactly 13, so the 10-12 window can
+    only be a v1 row someone put a tab in.
+    """
     if not line.strip() or line.startswith("#") or line.startswith(HEADER[0] + "\t"):
         return None
-    parts = line.rstrip("\n").split("\t")
-    if len(parts) < len(HEADER):
-        parts += [""] * (len(HEADER) - len(parts))
-    elif len(parts) > len(HEADER):
-        # Extra tabs can only have come from a hand-edited title.
-        parts = [*parts[: len(HEADER) - 1], "\t".join(parts[len(HEADER) - 1 :])]
+    raw = line.rstrip("\n").split("\t")
+    v2 = len(raw) >= len(HEADER)
+    parts = _rejoin(raw, len(HEADER) if v2 else len(HEADER_V1))
 
-    decided, decision, openalex_id, doi, year, via, seeds, reason, title = parts
+    if v2:
+        (
+            decided,
+            decision,
+            openalex_id,
+            doi,
+            year,
+            citations,
+            via,
+            seeds,
+            pdf_url,
+            venue,
+            authors,
+            reason,
+            title,
+        ) = parts
+    else:
+        decided, decision, openalex_id, doi, year, via, seeds, reason, title = parts
+        citations = pdf_url = venue = authors = ""
     if decision not in DECISIONS or not decided.strip():
         return None
     return Decision(
@@ -155,8 +226,12 @@ def parse_row(line: str) -> Decision | None:
         openalex_id=openalex_id.strip() or None,
         doi=doi.strip().lower() or None,
         year=int(year) if year.strip().isdigit() else None,
+        citations=int(citations) if citations.strip().isdigit() else None,
         via=tuple(v for v in via.split(";") if v),
         seeds=tuple(s for s in seeds.split(";") if s),
+        pdf_url=pdf_url.strip() or None,
+        venue=venue.strip(),
+        authors=tuple(a.strip() for a in authors.split(";") if a.strip()),
         reason=reason.strip(),
         title=title.strip(),
     )
@@ -230,3 +305,13 @@ def counts(ledger: Ledger) -> collections.Counter[str]:
         if found is not None:
             standing[id(found)] = found
     return collections.Counter(row.decision for row in standing.values())
+
+
+def pending(ledger: Ledger) -> tuple[Decision, ...]:
+    """The rows whose standing decision is ``pending``, in ledger order."""
+    return tuple(
+        row
+        for row in ledger.rows
+        if row.decision == PENDING
+        and ledger.lookup(openalex_id=row.openalex_id, doi=row.doi) is row
+    )

@@ -38,11 +38,15 @@ REFERENCE = "reference"
 CITATION = "citation"
 RELATED = "related"
 
-# Everything the note writer and the linker need, in one round trip.
+# Everything the note writer, the linker and the screening row need, in one
+# round trip. ``authorships`` is the widest of them and is here because
+# ``paper_from_openalex`` is the fallback record for every work Crossref has
+# never heard of: without it such a note, and every reading-list byline, comes
+# out with no authors at all.
 WORK_FIELDS = (
     "id,doi,title,publication_year,type,cited_by_count,open_access,"
     "best_oa_location,topics,primary_location,abstract_inverted_index,"
-    "referenced_works,related_works"
+    "authorships,referenced_works,related_works"
 )
 
 

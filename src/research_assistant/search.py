@@ -193,6 +193,22 @@ class SearchError(Exception):
     """Raised when a target names no note, or more than one."""
 
 
+def byline(authors: Sequence[str]) -> str:
+    """``Ransford et al.``: enough to recognise the paper, not to cite it.
+
+    A free function as well as a :class:`Record` property, because the reading
+    list renders candidates that have no note and so are not records.
+    """
+    if not authors:
+        return "unknown"
+    first = authors[0].split()[-1]
+    if len(authors) == 1:
+        return first
+    if len(authors) == 2:
+        return f"{first} & {authors[1].split()[-1]}"
+    return f"{first} et al."
+
+
 @dataclass(frozen=True, slots=True)
 class Record:
     """One paper note, parsed once: properties, prose, and its PDF if present."""
@@ -225,14 +241,7 @@ class Record:
     @property
     def byline(self) -> str:
         """``Ransford et al.``: enough to recognise the paper, not to cite it."""
-        if not self.authors:
-            return "unknown"
-        first = self.authors[0].split()[-1]
-        if len(self.authors) == 1:
-            return first
-        if len(self.authors) == 2:
-            return f"{first} & {self.authors[1].split()[-1]}"
-        return f"{first} et al."
+        return byline(self.authors)
 
 
 @dataclass(frozen=True, slots=True)

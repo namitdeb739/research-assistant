@@ -15,7 +15,7 @@ import pytest
 from notes import write_note
 from typer.testing import CliRunner
 
-from research_assistant import cli, graph, health, screening, search, vault
+from research_assistant import cli, graph, health, screening, search, sources, vault
 
 runner = CliRunner()
 
@@ -605,3 +605,577 @@ def test_bib_wants_exactly_one_of_out_and_check(tmp_path: Path) -> None:
     result = runner.invoke(cli.app, ["--papers-dir", str(papers), "bib"])
 
     assert result.exit_code == 1
+
+
+def _pending(**kwargs: object) -> screening.Decision:
+    fields: dict[str, object] = {
+        "decided": "2026-09-04T11:20:03+00:00",
+        "decision": screening.PENDING,
+    }
+    fields.update(kwargs)
+    return screening.Decision(**fields)  # type: ignore[arg-type]
+
+
+def _fake_graph(
+    monkeypatch: pytest.MonkeyPatch,
+    candidates: dict[str, graph.Candidate],
+    works: dict[str, dict[str, Any]],
+) -> None:
+    """One hop out from one root, without a network."""
+    monkeypatch.setattr(
+        graph, "fetch_by_doi", lambda _dois, *, client: [_work("W1", year=2010)]
+    )
+    monkeypatch.setattr(graph, "harvest", lambda _seeds, **_kwargs: candidates)
+    monkeypatch.setattr(
+        graph,
+        "fetch_works",
+        lambda ids, *, client, **_kwargs: [
+            works[ident] for ident in ids if ident in works
+        ],
+    )
+
+
+def _seeded(ident: str, *, seeds: tuple[str, ...]) -> graph.Candidate:
+    return graph.Candidate(
+        openalex_id=ident,
+        doi=None,
+        provenance=frozenset({graph.CITATION}),
+        seeds=frozenset(seeds),
+    )
+
+
+def test_expand_records_pending_rows_and_writes_no_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """The whole point: the papers folder only grows when you say `promote`."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    _fake_graph(
+        monkeypatch,
+        {"W2": _seeded("W2", seeds=("W1", "W9"))},
+        {"W2": _work("W2", year=2021)},
+    )
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand"])
+
+    assert result.exit_code == 0
+    assert sorted(p.name for p in papers.glob("*.md")) == ["Seed.md"]
+    rows = screening.load(papers).rows
+    assert [(r.decision, r.openalex_id) for r in rows] == [("pending", "W2")]
+    assert (tmp_path / "Reading List.md").is_file()
+    assert "1 pending (+1)" in result.stdout
+
+
+def test_the_floor_keeps_two_seeds_or_a_famous_paper_and_drops_the_rest(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Two independent signals: reached by several of yours, or widely cited."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    works = {
+        "W2": _work("W2", year=2021) | {"cited_by_count": 5},
+        "W3": _work("W3", year=2021) | {"cited_by_count": 900},
+        "W4": _work("W4", year=2021),
+    }
+    _fake_graph(
+        monkeypatch,
+        {
+            "W2": _seeded("W2", seeds=("W1",)),
+            "W3": _seeded("W3", seeds=("W1",)),
+            "W4": _seeded("W4", seeds=("W1", "W9")),
+        },
+        works,
+    )
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand"])
+
+    assert result.exit_code == 0
+    assert "1 below the floor (<2 seeds and <50 citations)" in result.stdout
+    assert {r.openalex_id for r in screening.load(papers).rows} == {"W3", "W4"}
+
+
+def test_a_lowered_floor_records_everything(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    _fake_graph(monkeypatch, {"W2": _seeded("W2", seeds=("W1",))}, {"W2": _work("W2")})
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--papers-dir",
+            str(papers),
+            "expand",
+            "--min-seeds",
+            "1",
+            "--min-citations",
+            "0",
+        ],
+    )
+
+    assert result.exit_code == 0
+    assert len(screening.load(papers).rows) == 1
+
+
+def test_a_second_expand_records_nothing_and_re_renders_the_same_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """A pending row suppresses a new row, so the ledger stops doubling."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    _fake_graph(
+        monkeypatch,
+        {"W2": _seeded("W2", seeds=("W1", "W9"))},
+        {"W2": _work("W2", year=2021)},
+    )
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "expand"])
+    before = (tmp_path / "Reading List.md").read_bytes()
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand"])
+
+    assert result.exit_code == 0
+    assert "1 already screened" in result.stdout
+    assert len(screening.load(papers).rows) == 1
+    assert (tmp_path / "Reading List.md").read_bytes() == before
+
+
+def test_a_dry_run_writes_no_row_and_no_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    _fake_graph(
+        monkeypatch,
+        {"W2": _seeded("W2", seeds=("W1", "W9"))},
+        {"W2": _work("W2", year=2021)},
+    )
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "expand", "--dry-run"]
+    )
+
+    assert result.exit_code == 0
+    assert not screening.ledger_path(papers).exists()
+    assert not (tmp_path / "Reading List.md").exists()
+
+
+def test_a_selector_excludes_a_whole_route_after_confirming(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(
+        papers,
+        [
+            _pending(openalex_id="W2", via=("citation",), title="Forward"),
+            _pending(openalex_id="W3", via=("reference",), title="Backward"),
+        ],
+    )
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--papers-dir",
+            str(papers),
+            "expand",
+            "--exclude",
+            "--via",
+            "citation",
+            "--reason",
+            "all NVM, not harvesting",
+        ],
+        input="y\n",
+    )
+
+    assert result.exit_code == 0
+    assert "1 candidate(s) selected" in result.stdout
+    ledger = screening.load(papers)
+    assert ledger.decided(openalex_id="W2", doi=None)
+    assert [r.openalex_id for r in screening.pending(ledger)] == ["W3"]
+
+
+def test_a_declined_selector_writes_nothing(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", via=("citation",))])
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--papers-dir",
+            str(papers),
+            "expand",
+            "--exclude",
+            "--via",
+            "citation",
+            "--reason",
+            "no",
+        ],
+        input="n\n",
+    )
+
+    assert result.exit_code == 0
+    assert len(screening.load(papers).rows) == 1
+    assert not (tmp_path / "Reading List.md").exists()
+
+
+def test_a_selector_matching_nothing_is_an_error(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", via=("reference",))])
+
+    result = runner.invoke(
+        cli.app,
+        [
+            "--papers-dir",
+            str(papers),
+            "expand",
+            "--exclude",
+            "--via",
+            "citation",
+            "--reason",
+            "no",
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "matches no pending candidate" in result.output
+
+
+def _promotable(ident: str = "W2", *, pdf: bool = True) -> dict[str, Any]:
+    work: dict[str, Any] = {
+        "id": f"https://openalex.org/{ident}",
+        "title": "Mementos: System Support",
+        "publication_year": 2011,
+        "cited_by_count": 812,
+        "authorships": [{"author": {"display_name": "Benjamin Ransford"}}],
+        "primary_location": {"source": {"display_name": "ASPLOS"}},
+        "topics": [],
+    }
+    if pdf:
+        work["best_oa_location"] = {"pdf_url": "https://example.org/m.pdf"}
+    return work
+
+
+def test_promote_writes_the_note_the_pdf_and_an_include_row(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(
+        papers, [_pending(openalex_id="W2", title="Mementos", seeds=("W1",))]
+    )
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: [_promotable()])
+    monkeypatch.setattr(sources, "fetch_pdf", lambda *a, **k: b"%PDF-1.4 body")
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "W2"])
+
+    assert result.exit_code == 0
+    assert len(list(papers.glob("*.md"))) == 1
+    assert (tmp_path / "pdfs" / "ransford2011mementos.pdf").is_file()
+    ledger = screening.load(papers)
+    assert ledger.decided(openalex_id="W2", doi=None)
+    assert screening.pending(ledger) == ()
+    assert "0 pending (-1)" in result.stdout
+    assert "Now run the `relink` command." in result.stdout
+
+
+def test_promote_writes_the_note_even_when_no_pdf_can_be_had(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """`tidy` adopts the PDF once it lands; losing the note would be worse."""
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", title="Mementos")])
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: [_promotable(pdf=False)])
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "W2"])
+
+    assert result.exit_code == 0
+    assert len(list(papers.glob("*.md"))) == 1
+    assert not (tmp_path / "pdfs").exists()
+    assert "no fetchable PDF" in result.stdout
+
+
+def test_promote_with_no_pdf_flag_never_reaches_for_one(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", title="Mementos")])
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: [_promotable()])
+
+    def _refuse(*_a: object, **_k: object) -> bytes:
+        raise AssertionError("--no-pdf must not fetch")
+
+    monkeypatch.setattr(sources, "fetch_pdf", _refuse)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "promote", "W2", "--no-pdf"]
+    )
+
+    assert result.exit_code == 0
+    assert not (tmp_path / "pdfs").exists()
+
+
+def test_promote_a_paper_already_in_the_vault_creates_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Vault and ledger agree: the row is written, the note is not duplicated."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    vault.update_frontmatter(papers / "Mementos.md", {"openalex_id": "W2"})
+    screening.append(papers, [_pending(openalex_id="W2", title="Mementos")])
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: [_promotable()])
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "W2"])
+
+    assert result.exit_code == 0
+    assert "Already in the vault" in result.stdout
+    assert len(list(papers.glob("*.md"))) == 1
+    assert screening.load(papers).decided(openalex_id="W2", doi=None)
+
+
+def test_promote_refuses_to_guess_between_two_matching_titles(
+    tmp_path: Path,
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(
+        papers,
+        [
+            _pending(openalex_id="W2", title="A Survey of Energy Harvesting"),
+            _pending(openalex_id="W3", title="Energy-Aware Scheduling"),
+        ],
+    )
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "energy"])
+
+    assert result.exit_code == 1
+    assert "2 pending candidates match 'energy'" in result.output
+
+
+def test_promote_a_target_that_names_nothing_pending(tmp_path: Path) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "promote", "W9"])
+
+    assert result.exit_code == 1
+    assert "matches no pending candidate" in result.output
+
+
+def test_reading_list_filters_what_it_prints_not_what_it_writes(
+    tmp_path: Path,
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(
+        papers,
+        [
+            _pending(openalex_id="W2", via=("citation",), title="Forward"),
+            _pending(openalex_id="W3", via=("reference",), title="Backward"),
+        ],
+    )
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "reading-list", "--via", "citation"]
+    )
+
+    assert result.exit_code == 0
+    assert "2 pending · showing 1" in result.stdout
+    note = (tmp_path / "Reading List.md").read_text(encoding="utf-8")
+    assert "Forward" in note
+    assert "Backward" in note
+
+
+def test_the_obsidian_uri_percent_encodes_both_halves(tmp_path: Path) -> None:
+    (tmp_path / ".obsidian").mkdir()
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    note = papers / "Mementos - System Support.md"
+    note.write_text("", encoding="utf-8")
+
+    uri = cli._obsidian_uri(note, papers_dir=papers)
+
+    assert uri == (
+        f"obsidian://open?vault={tmp_path.name}&file=papers%2FMementos+-+System+Support"
+    )
+
+
+def test_an_unidentifiable_vault_names_where_it_looked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Guessing a vault name is worse than saying so, as `--papers-dir` holds."""
+    monkeypatch.delenv("OBSIDIAN_VAULT", raising=False)
+    papers = tmp_path / "papers"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+
+    result = runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "open", "ransford2011mementos", "--note"],
+    )
+
+    assert result.exit_code == 1
+    assert "OBSIDIAN_VAULT" in result.output
+
+
+def test_open_a_pending_candidate_points_at_promote(tmp_path: Path) -> None:
+    """`open` is a read verb: it must not write a note, a PDF and a row."""
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", title="Mementos")])
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "open", "W2"])
+
+    assert result.exit_code == 1
+    assert "research-assistant promote W2" in result.output
+
+
+def test_open_launches_the_pdf_and_the_note(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    (tmp_path / ".obsidian").mkdir()
+    papers = tmp_path / "papers"
+    write_note(
+        papers, "Mementos", key="ransford2011mementos", pdf="ransford2011mementos.pdf"
+    )
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir()
+    (pdfs / "ransford2011mementos.pdf").write_bytes(b"%PDF-1.4")
+    launched: list[str] = []
+
+    def _record(target: str) -> bool:
+        launched.append(target)
+        return True
+
+    monkeypatch.setattr(cli, "_launch", _record)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "open", "ransford2011mementos"]
+    )
+
+    assert result.exit_code == 0
+    assert launched[0].endswith("ransford2011mementos.pdf")
+    assert launched[1].startswith("obsidian://open?vault=")
+
+
+def test_open_pdf_only_fails_when_there_is_no_pdf(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    papers = tmp_path / "papers"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    monkeypatch.setattr(cli, "_launch", lambda _target: True)
+
+    result = runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "open", "ransford2011mementos", "--pdf"],
+    )
+
+    assert result.exit_code == 1
+    assert "No PDF on disk" in result.output
+
+
+def test_promote_all_confirms_before_recreating_the_note_explosion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    papers = tmp_path / "papers"
+    papers.mkdir()
+    screening.append(papers, [_pending(openalex_id="W2", title="Mementos")])
+    monkeypatch.setattr(graph, "fetch_works", lambda *a, **k: [_promotable()])
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "promote", "--all"], input="n\n"
+    )
+
+    assert result.exit_code == 0
+    assert "1 candidate(s) selected" in result.stdout
+    assert list(papers.glob("*.md")) == []
+    assert screening.pending(screening.load(papers))
+
+
+def test_report_and_adopt_do_not_render_the_reading_list(tmp_path: Path) -> None:
+    """`--adopt` writes only include rows, so the pending set is unchanged."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+
+    assert (
+        runner.invoke(
+            cli.app, ["--papers-dir", str(papers), "expand", "--adopt"]
+        ).exit_code
+        == 0
+    )
+    assert (
+        runner.invoke(
+            cli.app, ["--papers-dir", str(papers), "expand", "--report"]
+        ).exit_code
+        == 0
+    )
+    assert not (tmp_path / "Reading List.md").exists()
+
+
+def test_open_falls_back_to_the_note_when_no_pdf_is_on_disk(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The note is still openable, so only `open --pdf` fails."""
+    (tmp_path / ".obsidian").mkdir()
+    papers = tmp_path / "papers"
+    write_note(
+        papers,
+        "Mementos",
+        key="ransford2011mementos",
+        pdf_url="https://example.org/m.pdf",
+    )
+    launched: list[str] = []
+
+    def _record(target: str) -> bool:
+        launched.append(target)
+        return True
+
+    monkeypatch.setattr(cli, "_launch", _record)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "open", "ransford2011mementos"]
+    )
+
+    assert result.exit_code == 0
+    assert [t.split(":")[0] for t in launched] == ["obsidian"]
+    assert "https://example.org/m.pdf" in result.output
+
+
+def test_every_candidate_below_the_floor_names_the_two_thresholds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: None
+) -> None:
+    """Reporting "0 new" would read as if the graph were empty."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Seed", key="a2010seed", doi="10.1/a")
+    _fake_graph(monkeypatch, {"W2": _seeded("W2", seeds=("W1",))}, {"W2": _work("W2")})
+
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand"])
+
+    assert result.exit_code == 0
+    assert "1 below the floor (<2 seeds and <50 citations)" in result.stdout
+    assert "--min-seeds 1 --min-citations 0" in result.stdout
+    assert screening.load(papers).rows == ()
+
+
+def test_the_reading_list_stays_out_of_every_papers_glob(tmp_path: Path) -> None:
+    """A sibling, not a note: one forgotten guard corrupts a bib or a PRISMA count."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Mementos", key="ransford2011mementos", doi="10.1/a")
+    screening.append(papers, [_pending(openalex_id="W2", title="Pending")])
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "reading-list"])
+    assert (tmp_path / "Reading List.md").is_file()
+
+    out = tmp_path / "refs.bib"
+    bib = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "bib", "--out", str(out)]
+    )
+    found = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "find", "--limit", "9"]
+    )
+    report = runner.invoke(cli.app, ["--papers-dir", str(papers), "expand", "--report"])
+
+    assert out.read_text(encoding="utf-8").count("@") == 1
+    assert "1 notes" in found.stdout
+    assert bib.exit_code == 0
+    assert "Included       1   notes in the vault" in report.stdout

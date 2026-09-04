@@ -1,13 +1,14 @@
 ---
 name: research-vault
-description: Use when answering any literature question against an Obsidian bibliography vault ("do we have anything on X", "what should I cite for Y", prior-art checks, related-work drafting, picking papers to read), or when touching the paper notes, their PDFs, or a generated .bib. Covers ranked search over the vault, note↔PDF navigation, and what the notes do and do not record.
+description: Use when answering any literature question against an Obsidian bibliography vault ("do we have anything on X", "what should I cite for Y", prior-art checks, related-work drafting, picking papers to read), or when touching the paper notes, their PDFs, or a generated .bib. Covers ranked search over the vault, the pending reading list, note↔PDF navigation, and what the notes do and do not record.
 ---
 
 # The research vault
 
 One Markdown note per paper, PDFs in a sibling `pdfs/`, topic hubs in a sibling
-`topics/`. `VAULT_PAPERS_DIR` points at the notes; the bibliography is generated
-from them.
+`topics/`, and the candidates awaiting triage in a sibling `Reading List.md`.
+`VAULT_PAPERS_DIR` points at the notes; the bibliography is generated from
+them.
 
 Inside a uv project that depends on the package, prefix every command with `uv
 run`; the project may also wrap them in `just` recipes.
@@ -24,12 +25,21 @@ and generalising is the failure mode these commands exist to replace.
 | `show <key>` | One whole note |
 | `near <key>` | Graph neighbours: cited, and citing |
 | `pdf <key>` | An absolute path on stdout, nothing else |
+| `open <key>` | The PDF in the default viewer, the note in Obsidian |
+| `reading-list [query]` | Candidates `expand` found but nobody has promoted yet |
 | `cite-check <file.tex…>` | Which `\cite` keys in a draft have no note behind them |
 | `health` | Retracted papers, duplicate preprint/version-of-record pairs |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
-authors (×1). Deterministic, no index, no model. These six never write, except
-`health --fix`, which writes one key and nothing else.
+authors (×1). Deterministic, no index, no model. These never write, except
+`health --fix`, which writes one key and nothing else, and `reading-list`, which
+regenerates the note it prints from.
+
+**`find` means "in the vault".** It never sees a pending candidate: its BM25
+corpus is title, topics, abstract, notes, venue and authors, and a pending
+candidate has only a title, so the scores would not be comparable. `reading-list`
+is the only view of the pending set, and the two answer different questions —
+"do we have this" versus "was this ever offered".
 
 ## Query technique
 
@@ -96,7 +106,8 @@ before making a coverage claim.
 | `near` | Derives "cited by" by scanning every note's `cites`; there is deliberately no `cited_by`. Its unresolved count says how much of a paper's bibliography `expand` has not pulled in. |
 | Titles | Sometimes truncated upstream: Crossref records Mementos as just "Mementos". Check the PDF before quoting a title. |
 | `retracted` | `null`, or the notice type (`retraction`, `expression_of_concern`, …). Set from Crossref, never by hand. **Check it before recommending a citation** — an expression of concern is not a retraction, and the distinction decides whether the paper is still citable. |
-| `screening.tsv` | A sibling of the notes, not frontmatter. Holds what was **turned down**; the notes hold what was kept. A paper absent from the vault is not necessarily unknown to it. |
+| `screening.tsv` | A sibling of the notes, not frontmatter. Holds what was **turned down** and what is still **pending**; the notes hold what was kept. A paper absent from the vault is not necessarily unknown to it — check `reading-list` before calling it a gap. |
+| `Reading List.md` | A sibling too, and generated wholesale from the ledger's pending rows. Not a paper note, and never worth reading or editing directly: run `reading-list` instead. |
 
 ## The write side
 
@@ -106,10 +117,18 @@ Notes are write-once and Obsidian owns them.
 |---|---|
 | `paper <doi\|openalex-id>` | One new note |
 | `source --title … --author …` | One note for what no index knows |
-| `expand` | Notes one hop out along the citation graph, plus a ledger row each |
+| `expand` | A `pending` ledger row per candidate, and `Reading List.md`. **No notes.** |
+| `promote <id…>` | One note and PDF per pending candidate, plus an `include` row |
 | `relink` | `cites`, `topics`, the citation count, and the hub notes |
 | `tidy` | Note bodies, missing abstracts, the `read` tag, key order; `--bibfields` fills volume/pages/publisher from Crossref |
 | `bib --out <file>` | The bibliography. `bib --check` audits cite keys without writing |
+
+**`expand` never adds a paper; `promote` does.** One hop out from a whole vault
+is thousands of works, and a folder that grows by graph traversal stops being
+the set of papers somebody chose. So `expand` records candidates clearing a
+floor (2 seeds or 50 citations, both tunable) as `pending`, and `Reading List.md`
+is where they are triaged. Never suggest `expand` as the way to add a known
+paper — that is `paper <doi>`.
 
 **A decision not to add a paper is worth recording.** `expand --exclude <doi|id>
 --reason "…"` appends a row to `screening.tsv`, and `expand` then never surfaces

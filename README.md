@@ -6,17 +6,21 @@ note per paper → BibTeX.
 ```mermaid
 flowchart LR
     IDX["Crossref<br/>OpenAlex"]
+    LEDGER["screening.tsv"]
+    LIST["Reading List.md"]
     NOTES["papers/<br/>one note per paper"]
     PDFS["pdfs/"]
     TOPICS["topics/"]
     BIB["refs.bib"]
 
-    IDX -- "paper · expand" --> NOTES
-    IDX -- "expand --pdfs" --> PDFS
+    IDX -- "expand" --> LEDGER
+    LEDGER -- "render" --> LIST
+    IDX -- "paper · promote" --> NOTES
+    IDX -- "paper · promote" --> PDFS
     PDFS -- "highlights" --> NOTES
     NOTES -- "relink" --> TOPICS
     NOTES -- "bib" --> BIB
-    NOTES -- "find · show · near" --> ANS["answers"]
+    NOTES -- "find · show · near · open" --> ANS["answers"]
 ```
 
 **The only bytes a model writes into a note are the `### ` headings over your
@@ -39,14 +43,16 @@ Install both: the plugin drives the CLI.
 **The CLI:**
 
 ```bash
-uv tool install git+https://github.com/namitdeb739/research-assistant@v0.3.0
+uv tool install git+https://github.com/namitdeb739/research-assistant@v0.4.0
 ```
 
-Drop the `@v0.3.0` to track `main` instead. Pinning is the better default here
+Drop the `@v0.4.0` to track `main` instead. Pinning is the better default here
 because the **note format is versioned and the tag is the format**: 0.3.0 added
 seven frontmatter keys, and an unpinned reinstall can move a vault's format
-under you. `uv tool upgrade research-assistant` moves a pinned install forward
-only when you change the pin, which is the point.
+under you. 0.4.0 leaves the note format alone; what grew is the screening
+ledger's row, from nine columns to thirteen. `uv tool upgrade
+research-assistant` moves a pinned install forward only when you change the
+pin, which is the point.
 
 **The Claude Code plugin:**
 
@@ -86,6 +92,7 @@ skills never describe a CLI you do not have. It adds:
 | `show <target…>` | Whole notes, by cite key, note name or DOI | |
 | `near <target>` | What it cites, and what in the vault cites it | |
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
+| `open <target>` | The PDF in your viewer, the note in Obsidian | `--pdf` `--note` |
 | `cite-check <file.tex…>` | Reconcile a document's `\cite` keys against the vault | `--bib` `--unused`/`--no-unused` |
 | `health` | Retractions, duplicate pairs, and metadata drift | `--drift` `--no-retractions` `--no-duplicates` `--fix` |
 
@@ -157,7 +164,9 @@ back.
 |---|---|---|
 | `paper <doi\|openalex-id>` | Look one up and add it | `--force` |
 | `source` | Record what no index knows | `--title` `--author` `--year` `--venue` `--url` `--type` `--pdf` `--key` |
-| `expand` | Walk the citation graph one hop | `--dry-run` `--screen` `--report` `--adopt` `--include` `--exclude` `--reason` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
+| `expand` | Screen the citation graph one hop out | `--dry-run` `--report` `--adopt` `--include` `--exclude` `--reason` `--seed` `--via` `--query` `--yes` `--backward` `--forward` `--related` `--min-seeds` `--min-citations` `--min-year` `--limit` |
+| `promote <target…>` | Turn pending candidates into notes | `--all` `--seed` `--via` `--min-year` `--min-citations` `--limit` `--no-pdf` `--force` `--yes` |
+| `reading-list [query…]` | Re-render `Reading List.md`, print the subset | `--seed` `--via` `--min-year` `--min-citations` `--limit` `--json` |
 | `relink` | Rebuild `cites` links and topic hubs | |
 | `tidy` | Reformat bodies, adopt PDFs, fill abstracts, restore key order | `--abstracts`/`--no-abstracts` `--bibfields` |
 | `bib --out <file>` | Regenerate the bibliography | `--check` |
@@ -172,15 +181,44 @@ Why they behave as they do:
   indexes cover journals and proceedings; a bibliography cites a slide deck, a
   vendor guide, a datasheet, a standard. Such a note carries `doi: null` and
   `openalex_id: null`, so the citation graph cannot reach it. Link it by hand.
+- **`expand` screens; `promote` acquires.** `expand` writes no notes at all. It
+  records each candidate as a `pending` row in `screening.tsv` and regenerates
+  `Reading List.md`; `promote` is what turns one into a note with a PDF. One
+  hop out from 180 seeds is thousands of works, and a vault that grows by
+  graph traversal stops being the set of papers you decided mattered.
+- **A floor, because forward citations are unbounded.** A candidate is recorded
+  only if at least `--min-seeds` (2) of your own papers reach it, *or* it has at
+  least `--min-citations` (50) citations. Two independent signals: something
+  several of yours reach is relevant regardless of fame, and something famous is
+  worth seeing even from one seed. `--min-seeds 1 --min-citations 0` records
+  everything.
 - **`expand` walks out from every note *not* tagged `harvested`,** so re-running
-  it never quietly reaches depth 2. Drop that tag from the paper worth going
-  deeper on.
+  it never quietly reaches depth 2. `promote` tags what it writes `harvested`
+  for exactly that reason. Drop the tag from the paper worth going deeper on.
 - **`expand` remembers what you turned down.** Decisions go in a sibling
   `screening.tsv`, not in frontmatter: an exclusion is a fact about your search
   process, not about the paper, and an excluded paper has no note to hold it
   anyway. A note that exists always beats the ledger, and `--report` prints the
   four PRISMA numbers plus wherever the two disagree. See
   [`docs/screening.md`](docs/screening.md).
+- **`Reading List.md` is a view, not a store.** It is generated wholesale from
+  the ledger's pending rows every time anything changes them, and it can be
+  deleted and rebuilt at any point. Nothing parses it back into a decision. It
+  is a **sibling** of the papers folder rather than a note in it, so it stays
+  out of every `papers/*.md` glob — a forgotten exclusion rule there would
+  silently corrupt a bibliography or a PRISMA number.
+- **`--include` and `--exclude` take a set, not just an id.** With `--seed`,
+  `--via`, `--query`, `--min-year` or `--min-citations` they act on the matching
+  pending candidates, after showing the count and the first five and asking.
+  Preview the exact set with `reading-list` and the identical flags.
+- **`reading-list` is here rather than above** because it regenerates the note
+  before printing. The filters narrow what is *printed*, never what is written:
+  the note is the whole pending set by definition. It is also the command to run
+  after hand-editing `screening.tsv`.
+- **`open` is a read verb.** It opens the PDF in your viewer and the note in
+  Obsidian, and it never promotes: on a still-pending candidate it exits with
+  the `promote` command you wanted. The vault name comes from the nearest
+  ancestor holding a `.obsidian/`, or from `OBSIDIAN_VAULT`.
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
 - **`tidy --bibfields` is opt-in because it costs a request per note.** The
@@ -197,6 +235,23 @@ Why they behave as they do:
 - **`tidy` owns the note body.** See [what a tool may
   overwrite](docs/note-format.md#what-a-tool-may-overwrite). Section content is
   only moved, never rewritten; unknown headings are preserved.
+
+### Screening, in practice
+
+```bash
+research-assistant expand                        # candidates → pending rows
+research-assistant reading-list --seed mementos  # preview one root's subset
+research-assistant promote W2059262820           # note + PDF + include row
+research-assistant relink                        # once, after promoting
+
+research-assistant expand --exclude --seed mementos --via citation \
+  --reason "forward cites of Mementos are all NVM, not harvesting"
+```
+
+`Reading List.md` is a sibling of the papers folder, beside `pdfs/`, `topics/`
+and `screening.tsv`. Its `Id` column is what `promote` takes. Candidates several
+of your own papers reached lead the note and are never repeated under a single
+seed, so each one appears exactly once.
 
 ### Highlights
 

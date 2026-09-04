@@ -5,14 +5,18 @@ from __future__ import annotations
 import collections
 import datetime as dt
 import json
+import os
 import re
-from dataclasses import dataclass
+import subprocess
+import sys
+import urllib.parse
+from dataclasses import dataclass, replace
 
 # Typer resolves these annotations at runtime through get_type_hints(), so
 # `Path` cannot move into the type-checking block despite only appearing in
 # annotations: --papers-dir and --out would both stop resolving.
 from pathlib import Path  # noqa: TC003
-from typing import TYPE_CHECKING, Annotated, Any
+from typing import TYPE_CHECKING, Annotated, Any, Final
 
 import httpx
 import typer
@@ -22,6 +26,7 @@ from research_assistant import (
     graph,
     health,
     highlights,
+    reading_list,
     screening,
     search,
     sources,
@@ -410,20 +415,28 @@ def _decision_for(
     reason: str,
     record: Paper | None = None,
 ) -> screening.Decision:
-    """One ledger row for one candidate, labelled from whatever metadata is here."""
+    """One ledger row for one candidate, labelled from whatever metadata is here.
+
+    The triage columns come off the work already in hand, so the reading list
+    renders from local files alone and never has to go back to OpenAlex.
+    """
     work = works.get(candidate.openalex_id, {})
-    year = work.get("publication_year")
+    known = record or (sources.paper_from_openalex(work) if work else None)
     return screening.Decision(
         decided=stamped,
         decision=decision,
         openalex_id=candidate.openalex_id,
         # The fetched work is the only place a backward candidate's DOI appears.
         doi=candidate.doi or _work_doi(work),
-        year=year if isinstance(year, int) else None,
+        year=known.year if known else None,
+        citations=known.citations if known else None,
         via=tuple(sorted(candidate.provenance)),
         seeds=tuple(sorted(candidate.seeds)),
+        pdf_url=known.pdf_url if known else None,
+        venue=(known.venue or "") if known else "",
+        authors=known.authors if known else (),
         reason=reason,
-        title=record.title if record else str(work.get("title") or ""),
+        title=known.title if known else "",
     )
 
 
@@ -470,26 +483,71 @@ def _adopt_ledger(papers_dir: Path, ledger: screening.Ledger) -> int:
     return 0
 
 
+def _confirm_set(rows: Sequence[screening.Decision], decision: str) -> bool:
+    """Show what a selector caught before writing a row for every one of them."""
+    typer.echo(f"{len(rows)} candidate(s) selected:")
+    for row in rows[:5]:
+        typer.echo(f"  {row.year or 'n.d.'}  {row.title[:70] or 'Untitled'}")
+    if len(rows) > 5:
+        typer.secho(f"  … {len(rows) - 5} more", fg=typer.colors.BRIGHT_BLACK)
+    return typer.confirm(f"{decision.capitalize()} them?")
+
+
 def _record_decisions(
-    papers_dir: Path, include: Sequence[str], exclude: Sequence[str], reason: str
+    papers_dir: Path,
+    ledger: screening.Ledger,
+    *,
+    targets: Sequence[str],
+    decision: str,
+    reason: str,
+    selector: reading_list.Selector,
+    yes: bool,
 ) -> int:
-    """Record decisions for ids named on the command line."""
-    wanted = [
-        (sources.as_openalex_id(raw) or None, raw) for raw in [*include, *exclude]
-    ]
+    """Record one decision for the ids named, the set selected, or both."""
+    if not targets and selector.empty:
+        typer.secho(
+            "Name an id, or select a set with --seed / --via / --query / "
+            "--min-year / --min-citations.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return 1
+
     stamped = screening.now()
     rows = [
         screening.Decision(
             decided=stamped,
-            decision=screening.INCLUDE if raw in set(include) else screening.EXCLUDE,
+            decision=decision,
             openalex_id=ident,
             doi=None if ident else sources.normalize_doi(raw),
             reason=reason,
         )
-        for ident, raw in wanted
+        for raw in targets
+        for ident in [sources.as_openalex_id(raw) or None]
     ]
+
+    if not selector.empty:
+        chosen = reading_list.select(screening.pending(ledger), selector)
+        if not chosen:
+            typer.secho(
+                "That selection matches no pending candidate.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            return 1
+        if not yes and not _confirm_set(chosen, decision):
+            return 0
+        # Carried forward whole: the new row supersedes the pending one and
+        # keeps the triage columns that were fetched when it was recorded.
+        rows.extend(
+            replace(row, decided=stamped, decision=decision, reason=reason)
+            for row in chosen
+        )
+
+    before = len(screening.pending(ledger))
     screening.append(papers_dir, rows)
     typer.secho(f"Recorded {len(rows)} decision(s).", fg=typer.colors.GREEN)
+    _announce_reading_list(papers_dir, before)
     return 0
 
 
@@ -552,8 +610,114 @@ def _report_screening(papers_dir: Path, ledger: screening.Ledger) -> int:
     return 0
 
 
+def _render_reading_list(papers_dir: Path) -> tuple[Path, int]:
+    """Regenerate ``Reading List.md`` from the ledger. Returns it and its size.
+
+    Re-read from disk rather than handed the rows in memory: the note is a view
+    of the file, and rendering it from anything else is how the two drift.
+    """
+    rows = screening.pending(screening.load(papers_dir))
+    _, by_openalex = vault.index(papers_dir)
+    notes = {ident: path.stem for ident, path in by_openalex.items()}
+    return reading_list.write(papers_dir, rows, notes=notes), len(rows)
+
+
+def _announce_reading_list(papers_dir: Path, before: int) -> int:
+    """Re-render, and say what it did to the pending count."""
+    path, count = _render_reading_list(papers_dir)
+    typer.secho(
+        f"\n{path.name} · {count} pending ({count - before:+d})",
+        fg=typer.colors.CYAN,
+    )
+    return count
+
+
+def _seed_ids(papers_dir: Path, targets: Sequence[str]) -> tuple[str, ...]:
+    """Resolve ``--seed`` targets to the OpenAlex ids the ledger records.
+
+    Anything `find` and `show` accept, so a seed can be named by cite key. A
+    target that names no note, or more than one, is an error: matching nothing
+    would silently select an empty set.
+    """
+    if not targets:
+        return ()
+    records = _load(papers_dir)
+    ids: list[str] = []
+    for target in targets:
+        record = _resolve(records, target)
+        if not record.openalex_id:
+            typer.secho(
+                f"{record.cite_key} has no openalex_id, so no candidate can "
+                "record it as a seed. Run `relink` first.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
+        ids.append(record.openalex_id)
+    return tuple(ids)
+
+
+def _selector(
+    papers_dir: Path,
+    *,
+    query: Sequence[str] | None,
+    seed: Sequence[str] | None,
+    via: Sequence[str] | None,
+    min_year: int | None,
+    min_citations: int | None,
+) -> reading_list.Selector:
+    """The flags every pending-set command shares, as one predicate."""
+    return reading_list.Selector(
+        query=" ".join(query or ()),
+        seeds=_seed_ids(papers_dir, seed or ()),
+        via=tuple(via or ()),
+        min_year=min_year,
+        min_citations=min_citations,
+    )
+
+
+def _print_pending(rows: Sequence[screening.Decision]) -> None:
+    for row in rows:
+        cites = f"{row.citations} cit" if row.citations is not None else "n.d. cit"
+        typer.echo(f"  {row.year or 'n.d.'}  {row.title[:78] or 'Untitled'}")
+        typer.secho(
+            f"        {search.byline(row.authors)} · "
+            f"{row.venue or 'unknown venue'} · {cites} · "
+            f"{row.openalex_id or row.doi or ''}",
+            fg=typer.colors.BRIGHT_BLACK,
+        )
+
+
+def _pending_as_dict(row: screening.Decision) -> dict[str, Any]:
+    return {
+        "openalex_id": row.openalex_id,
+        "doi": row.doi,
+        "title": row.title,
+        "authors": list(row.authors),
+        "year": row.year,
+        "venue": row.venue or None,
+        "citations": row.citations,
+        "via": list(row.via),
+        "seeds": list(row.seeds),
+        "pdf_url": row.pdf_url,
+        "decided": row.decided,
+    }
+
+
+# Two independent signals, either of which is enough. Something several of your
+# own papers reach is relevant regardless of fame; something highly cited is
+# worth seeing even from one seed. Without a floor, forward citations over ~180
+# seeds is thousands of works and the list stops being triageable.
+FLOOR_SEEDS: Final = 2
+FLOOR_CITATIONS: Final = 50
+
+
 @app.command()
 def expand(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(help="Ids to decide on, with --include or --exclude"),
+    ] = None,
     backward: Annotated[
         bool, typer.Option("--backward/--no-backward", help="Papers the roots cite")
     ] = True,
@@ -563,33 +727,51 @@ def expand(
     related: Annotated[
         bool, typer.Option("--related/--no-related", help="OpenAlex related works")
     ] = True,
-    pdfs: Annotated[
-        bool, typer.Option("--pdfs/--no-pdfs", help="Download open-access PDFs")
-    ] = True,
+    min_seeds: Annotated[
+        int | None,
+        typer.Option("--min-seeds", help="Floor: this many roots reached it (2)"),
+    ] = None,
+    min_citations: Annotated[
+        int | None,
+        typer.Option(
+            "--min-citations",
+            help="Floor: at least this many citations (50). Filters the "
+            "pending set in decision mode.",
+        ),
+    ] = None,
     min_year: Annotated[
         int | None, typer.Option("--min-year", help="Skip anything older")
     ] = None,
     limit: Annotated[
-        int | None, typer.Option("--limit", help="Stop after this many new notes")
+        int | None, typer.Option("--limit", help="Stop after this many new rows")
+    ] = None,
+    seed: Annotated[
+        list[str] | None,
+        typer.Option("--seed", help="Select candidates reached from this root"),
+    ] = None,
+    via: Annotated[
+        list[str] | None,
+        typer.Option("--via", help="Select by route: reference, citation, related"),
+    ] = None,
+    query: Annotated[
+        list[str] | None,
+        typer.Option("--query", help="Select by words in the candidate's title"),
     ] = None,
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="List candidates, write nothing")
     ] = False,
-    screen: Annotated[
-        bool,
-        typer.Option("--screen", help="Record candidates as pending, write no notes"),
-    ] = False,
     include: Annotated[
-        list[str] | None,
-        typer.Option("--include", help="Record a decision to include these ids"),
-    ] = None,
+        bool, typer.Option("--include", help="Record a decision to include them")
+    ] = False,
     exclude: Annotated[
-        list[str] | None,
-        typer.Option("--exclude", help="Record a decision to exclude these ids"),
-    ] = None,
+        bool, typer.Option("--exclude", help="Record a decision to exclude them")
+    ] = False,
     reason: Annotated[
         str | None, typer.Option("--reason", help="Why; required with --exclude")
     ] = None,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Skip the confirmation on a selected set")
+    ] = False,
     report: Annotated[
         bool, typer.Option("--report", help="Reconcile the vault against the ledger")
     ] = False,
@@ -597,7 +779,11 @@ def expand(
         bool, typer.Option("--adopt", help="Seed the ledger from the existing vault")
     ] = False,
 ) -> None:
-    """Add the papers around the vault: what it cites, cites it, and near it.
+    """Screen the papers around the vault: what it cites, cites it, and near it.
+
+    Writes no notes. Every candidate clearing the floor becomes a ``pending``
+    row in ``screening.tsv`` and a line in ``Reading List.md``; ``promote`` is
+    what turns one into a note with a PDF.
 
     Roots are every note *without* the ``harvested`` tag, so re-running never
     walks out to depth 2. To go deeper, drop that tag from the paper worth
@@ -608,11 +794,25 @@ def expand(
         typer.secho(f"{papers_dir} does not exist.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
 
-    terminal = [dry_run, screen, report, adopt, bool(include or exclude)]
-    if sum(terminal) > 1:
+    deciding = include or exclude
+    if sum([dry_run, report, adopt, deciding]) > 1:
         typer.secho(
-            "Give one of --dry-run, --screen, --report, --adopt, "
-            "or --include/--exclude.",
+            "Give one of --dry-run, --report, --adopt, or --include/--exclude.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    if include and exclude:
+        typer.secho(
+            "--include and --exclude are opposite decisions.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    if targets and not deciding:
+        typer.secho(
+            "Ids are only meaningful with --include or --exclude; "
+            "`expand` on its own screens the whole graph.",
             fg=typer.colors.RED,
             err=True,
         )
@@ -635,9 +835,24 @@ def expand(
         raise typer.Exit(_adopt_ledger(papers_dir, ledger))
     if report:
         raise typer.Exit(_report_screening(papers_dir, ledger))
-    if include or exclude:
+    if deciding:
         raise typer.Exit(
-            _record_decisions(papers_dir, include or [], exclude or [], reason or "")
+            _record_decisions(
+                papers_dir,
+                ledger,
+                targets=targets or [],
+                decision=screening.INCLUDE if include else screening.EXCLUDE,
+                reason=reason or "",
+                selector=_selector(
+                    papers_dir,
+                    query=query,
+                    seed=seed,
+                    via=via,
+                    min_year=min_year,
+                    min_citations=min_citations,
+                ),
+                yes=yes,
+            )
         )
 
     roots = _root_notes(papers_dir)
@@ -648,6 +863,10 @@ def expand(
         )
         raise typer.Exit(0)
     typer.echo(f"Expanding from {len(roots)} root note(s).")
+
+    seeds_floor = FLOOR_SEEDS if min_seeds is None else min_seeds
+    citations_floor = FLOOR_CITATIONS if min_citations is None else min_citations
+    before = len(screening.pending(ledger))
 
     with httpx.Client(follow_redirects=True) as client:
         seed_works = _resolve_roots(roots, client=client, backfill=not dry_run)
@@ -667,13 +886,16 @@ def expand(
             # surfaces the disagreement rather than the code resolving it.
             if ident in by_openalex or (candidate.doi and candidate.doi in by_doi):
                 continue
-            if ledger.decided(openalex_id=ident, doi=candidate.doi):
+            # `seen`, not `decided`: a pending row now renders in the reading
+            # list, so re-offering it would only grow the ledger by the whole
+            # candidate set on every run.
+            if ledger.seen(openalex_id=ident, doi=candidate.doi):
                 screened += 1
                 continue
             fresh[ident] = candidate
         typer.echo(
-            f"{len(candidates)} candidate(s), {len(fresh)} new, "
-            f"{screened} already screened."
+            f"{len(candidates):,} candidate(s), {len(fresh):,} new, "
+            f"{screened:,} already screened."
         )
         if not fresh:
             raise typer.Exit(0)
@@ -682,52 +904,57 @@ def expand(
             graph.bare_id(str(work.get("id", ""))): work
             for work in graph.fetch_works(sorted(fresh), client=client)
         }
-        kept = _select(fresh, works, by_doi, ledger, min_year=min_year)
+        above = {
+            ident: candidate
+            for ident, candidate in fresh.items()
+            if _above_floor(
+                candidate,
+                works.get(ident, {}),
+                min_seeds=seeds_floor,
+                min_citations=citations_floor,
+            )
+        }
+        typer.echo(
+            f"  {len(fresh) - len(above):,} below the floor "
+            f"(<{seeds_floor} seeds and <{citations_floor} citations)"
+        )
+        kept = _select(above, works, by_doi, ledger, min_year=min_year)
         selected = kept[:limit] if limit is not None else kept
         deferred = len(kept) - len(selected)
 
-        if dry_run or screen:
+        if dry_run:
             _print_candidates(selected, works)
             if deferred:
                 typer.secho(
                     f"  … {deferred} more deferred by --limit",
                     fg=typer.colors.BRIGHT_BLACK,
                 )
-        if dry_run:
             typer.secho(
-                f"\nDry run: {len(selected)} note(s) would be written.",
+                f"\nDry run: {len(selected)} candidate(s) would be recorded.",
                 fg=typer.colors.YELLOW,
             )
             raise typer.Exit(0)
-        if screen:
-            stamped = screening.now()
-            written_rows = screening.append(
-                papers_dir,
-                [
-                    _decision_for(c, works, stamped, screening.PENDING, "")
-                    for c in selected
-                ],
-            )
-            typer.secho(
-                f"\nRecorded {written_rows} candidate(s) as pending. "
-                f"Decide with `expand --include` / `--exclude`.",
-                fg=typer.colors.GREEN,
-            )
-            raise typer.Exit(0)
 
-        written, no_pdf = _write_notes(
-            selected, works, papers_dir=papers_dir, client=client, pdfs=pdfs
-        )
         stamped = screening.now()
         screening.append(
             papers_dir,
             [
-                _decision_for(
-                    entry.candidate, works, stamped, screening.INCLUDE, "", entry.record
-                )
-                for entry in written
+                _decision_for(candidate, works, stamped, screening.PENDING, "")
+                for candidate in selected
             ],
         )
+        typer.echo(f"    {len(selected):,} recorded as pending")
+        if deferred:
+            typer.secho(
+                f"    {deferred} deferred by --limit, offered again next run",
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+        if not selected and len(fresh) > len(above):
+            typer.secho(
+                "Nothing cleared the floor. `--min-seeds 1 --min-citations 0` "
+                "records everything.",
+                fg=typer.colors.YELLOW,
+            )
 
     for path, front in roots:
         subfields = _subfields_of(front)
@@ -745,15 +972,8 @@ def expand(
             },
         )
 
-    typer.secho(
-        f"\nWrote {len(written)} note(s) to {papers_dir}", fg=typer.colors.GREEN
-    )
-    if no_pdf:
-        typer.secho(
-            f"{len(no_pdf)} had no fetchable PDF; see the 'Missing PDF' view.",
-            fg=typer.colors.YELLOW,
-        )
-    typer.echo("Now run the `relink` command.")
+    _announce_reading_list(papers_dir, before)
+    typer.echo("Promote the ones worth reading: `promote <id>`.")
 
 
 def _subfields_of(front: dict[str, Any]) -> tuple[str, ...]:
@@ -763,6 +983,20 @@ def _subfields_of(front: dict[str, Any]) -> tuple[str, ...]:
         return ()
     return tuple(
         str(tag).removeprefix("topic/") for tag in tags if str(tag).startswith("topic/")
+    )
+
+
+def _above_floor(
+    candidate: graph.Candidate,
+    work: dict[str, Any],
+    *,
+    min_seeds: int,
+    min_citations: int,
+) -> bool:
+    """Whether a candidate clears either half of the floor. Pure."""
+    count = work.get("cited_by_count")
+    return len(candidate.seeds) >= min_seeds or (
+        isinstance(count, int) and count >= min_citations
     )
 
 
@@ -791,7 +1025,7 @@ def _select(
         # Same second chance for the ledger. A backward or related candidate
         # always arrives with `doi=None`, so this is the only place its DOI is
         # ever known, and an exclusion recorded against the DOI must still bite.
-        if ledger is not None and ledger.decided(openalex_id=ident, doi=doi):
+        if ledger is not None and ledger.seen(openalex_id=ident, doi=doi):
             continue
         year = work.get("publication_year")
         if min_year is not None and (not isinstance(year, int) or year < min_year):
@@ -799,6 +1033,8 @@ def _select(
         kept.append(candidate)
     kept.sort(
         key=lambda c: (
+            -len(c.seeds),
+            -(works[c.openalex_id].get("cited_by_count") or 0),
             -(works[c.openalex_id].get("publication_year") or 0),
             works[c.openalex_id].get("title") or "",
         )
@@ -819,7 +1055,7 @@ def _print_candidates(
 
 @dataclass(frozen=True, slots=True)
 class Written:
-    """A note `expand` just created, and what it took to create it."""
+    """A note `promote` just created, and what it took to create it."""
 
     path: Path
     key: str
@@ -835,14 +1071,19 @@ def _write_notes(
     client: httpx.Client,
     pdfs: bool,
 ) -> tuple[list[Written], list[str]]:
-    """Resolve each candidate against Crossref and write its note."""
+    """Resolve each candidate against Crossref and write its note.
+
+    Crossref is authoritative for the fields a bibliography needs;
+    :func:`sources.paper_from_openalex` is the fallback for the works it has
+    never heard of, and for the ones that mint no DOI at all.
+    """
     written: list[Written] = []
     no_pdf: list[str] = []
     # Seeded from the vault, not empty: an unseeded set only stops two notes in
     # one run colliding, and says nothing about the two hundred already there.
     seen_keys: set[str] = set(vault.cite_keys(papers_dir))
 
-    for position, candidate in enumerate(selected, start=1):
+    for candidate in selected:
         work = works[candidate.openalex_id]
         doi = _work_doi(work)
         record: Paper | None = None
@@ -857,6 +1098,13 @@ def _write_notes(
 
         key = _unclaimed_key(record.cite_key(), seen_keys)
         seen_keys.add(key)
+
+        typer.echo("")
+        typer.echo(f"  {record.title}")
+        typer.echo(
+            f"  {search.byline(record.authors)} · "
+            f"{record.venue or 'unknown venue'} {record.year or 'n.d.'}"
+        )
 
         topics, subfields = graph.topics_of(work)
         pdf_name = (
@@ -873,15 +1121,404 @@ def _write_notes(
                 papers_dir=papers_dir,
                 pdf_name=pdf_name,
                 openalex_id=candidate.openalex_id,
-                topics=topics,
+                # `harvested`, so the note is not an `expand` root and the
+                # depth-control mechanism survives: going deeper is still
+                # "drop the tag and re-run".
                 tags=_tags_for(subfields, harvested=True),
+                topics=topics,
             )
         except vault.VaultError as exc:
-            typer.secho(f"  [{position}] skipped: {exc}", fg=typer.colors.YELLOW)
+            typer.secho(f"  skipped: {exc}", fg=typer.colors.YELLOW)
             continue
         written.append(Written(path=path, key=key, candidate=candidate, record=record))
-        typer.echo(f"  [{position}/{len(selected)}] {path.name}")
+        typer.secho(f"  Added: {path}", fg=typer.colors.GREEN)
     return written, no_pdf
+
+
+def _pending_target(
+    rows: Sequence[screening.Decision], target: str
+) -> screening.Decision:
+    """The one pending candidate a target names, or an error naming the target.
+
+    Identifiers before titles, and more than one hit is never resolved by
+    guessing: promoting the wrong paper writes a note and downloads a PDF.
+    """
+    ident = sources.as_openalex_id(target)
+    doi = sources.normalize_doi(target)
+    needle = target.strip().lower()
+    for matched in (
+        [r for r in rows if ident and r.openalex_id == ident],
+        [r for r in rows if doi and r.doi == doi],
+        [r for r in rows if needle in r.title.lower()],
+    ):
+        if len(matched) == 1:
+            return matched[0]
+        if len(matched) > 1:
+            typer.secho(
+                f"{len(matched)} pending candidates match {target!r}:",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            for row in matched[:8]:
+                typer.echo(
+                    f"  {row.openalex_id or row.doi}  {row.year or 'n.d.'}  "
+                    f"{row.title[:66]}"
+                )
+            raise typer.Exit(1)
+    typer.secho(
+        f"{target!r} matches no pending candidate. "
+        "`reading-list` is the whole pending set.",
+        fg=typer.colors.RED,
+        err=True,
+    )
+    raise typer.Exit(1)
+
+
+@app.command()
+def promote(
+    targets: Annotated[
+        list[str] | None,
+        typer.Argument(help="Pending candidates: OpenAlex id, DOI or title words"),
+    ] = None,
+    all_: Annotated[
+        bool, typer.Option("--all", help="Every pending candidate the filters leave")
+    ] = False,
+    seed: Annotated[
+        list[str] | None,
+        typer.Option("--seed", help="Only candidates reached from this root"),
+    ] = None,
+    via: Annotated[
+        list[str] | None,
+        typer.Option("--via", help="Only this route: reference, citation, related"),
+    ] = None,
+    min_year: Annotated[
+        int | None, typer.Option("--min-year", help="Published on or after")
+    ] = None,
+    min_citations: Annotated[
+        int | None, typer.Option("--min-citations", help="At least this many citations")
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Stop after this many")
+    ] = None,
+    no_pdf: Annotated[
+        bool, typer.Option("--no-pdf", help="Write the note, fetch no PDF")
+    ] = False,
+    force: Annotated[
+        bool, typer.Option("--force", help="Write even if a note already holds it")
+    ] = False,
+    yes: Annotated[
+        bool, typer.Option("--yes", help="Skip the confirmation on a selected set")
+    ] = False,
+) -> None:
+    """Turn pending candidates into notes, with their PDFs.
+
+    The acquiring half of what `expand` used to do in one step. Read
+    ``Reading List.md`` (or `reading-list`) first: the ``Id`` column is what
+    goes here.
+    """
+    papers_dir = _papers_dir()
+    try:
+        ledger = screening.load(papers_dir)
+    except screening.ScreeningError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    pending = screening.pending(ledger)
+    if not targets and not all_:
+        typer.secho(
+            "Name a candidate, or --all to take every one the filters leave. "
+            "--seed / --via / --min-year / --min-citations narrow --all; "
+            "on their own they select nothing.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    chosen: list[screening.Decision] = [
+        _pending_target(pending, target) for target in targets or []
+    ]
+    if all_:
+        selector = _selector(
+            papers_dir,
+            query=None,
+            seed=seed,
+            via=via,
+            min_year=min_year,
+            min_citations=min_citations,
+        )
+        selected = reading_list.select(pending, selector, limit=limit)
+        if not selected:
+            typer.secho(
+                "That selection matches no pending candidate.",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1)
+        # Unfiltered `--all` is the gesture that recreates the note explosion,
+        # so it is the one that has to be typed twice.
+        if not yes and not _confirm_set(selected, "promote"):
+            raise typer.Exit(0)
+        chosen.extend(row for row in selected if row not in chosen)
+
+    without_id = [row for row in chosen if not row.openalex_id]
+    if without_id:
+        typer.secho(
+            f"{len(without_id)} candidate(s) carry no openalex_id and cannot be "
+            "looked up; add them with `paper <doi>`.",
+            fg=typer.colors.YELLOW,
+        )
+    chosen = [row for row in chosen if row.openalex_id]
+    if not chosen:
+        raise typer.Exit(1)
+
+    by_doi, by_openalex = vault.index(papers_dir)
+    stamped = screening.now()
+    already: list[screening.Decision] = []
+    wanted: list[graph.Candidate] = []
+    for row in chosen:
+        held = by_openalex.get(str(row.openalex_id)) or (
+            by_doi.get(row.doi) if row.doi else None
+        )
+        if held is not None and not force:
+            typer.secho(f"  Already in the vault at {held}", fg=typer.colors.YELLOW)
+            already.append(row)
+            continue
+        wanted.append(
+            graph.Candidate(
+                openalex_id=str(row.openalex_id),
+                doi=row.doi,
+                provenance=frozenset(row.via),
+                seeds=frozenset(row.seeds),
+            )
+        )
+
+    before = len(pending)
+    rows = [
+        # The vault and the ledger must agree: the candidate leaves the pending
+        # list whether this run wrote the note or found it already there.
+        replace(row, decided=stamped, decision=screening.INCLUDE, reason="promoted")
+        for row in already
+    ]
+    written: list[Written] = []
+    no_pdf_keys: list[str] = []
+    if wanted:
+        with httpx.Client(follow_redirects=True) as client:
+            works = {
+                graph.bare_id(str(work.get("id", ""))): work
+                for work in graph.fetch_works(
+                    [c.openalex_id for c in wanted], client=client
+                )
+            }
+            missing = [c for c in wanted if c.openalex_id not in works]
+            for candidate in missing:
+                typer.secho(
+                    f"  OpenAlex no longer returns {candidate.openalex_id}.",
+                    fg=typer.colors.YELLOW,
+                )
+            written, no_pdf_keys = _write_notes(
+                [c for c in wanted if c.openalex_id in works],
+                works,
+                papers_dir=papers_dir,
+                client=client,
+                pdfs=not no_pdf,
+            )
+        rows.extend(
+            _decision_for(
+                entry.candidate,
+                works,
+                stamped,
+                screening.INCLUDE,
+                "promoted",
+                entry.record,
+            )
+            for entry in written
+        )
+
+    screening.append(papers_dir, rows)
+    if no_pdf_keys and not no_pdf:
+        typer.secho(
+            f"{len(no_pdf_keys)} had no fetchable PDF; the note records "
+            "`pdf_url` and `pdf --audit` counts it.",
+            fg=typer.colors.YELLOW,
+        )
+    _announce_reading_list(papers_dir, before)
+    if written:
+        typer.echo("Now run the `relink` command.")
+
+
+@app.command(name="reading-list")
+def reading_list_cmd(
+    query: Annotated[
+        list[str] | None, typer.Argument(help="Words to match in a candidate's title")
+    ] = None,
+    seed: Annotated[
+        list[str] | None,
+        typer.Option("--seed", help="Only candidates reached from this root"),
+    ] = None,
+    via: Annotated[
+        list[str] | None,
+        typer.Option("--via", help="Only this route: reference, citation, related"),
+    ] = None,
+    min_year: Annotated[
+        int | None, typer.Option("--min-year", help="Published on or after")
+    ] = None,
+    min_citations: Annotated[
+        int | None, typer.Option("--min-citations", help="At least this many citations")
+    ] = None,
+    limit: Annotated[
+        int | None, typer.Option("--limit", help="Show at most this many")
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Emit the selected rows as JSON")
+    ] = False,
+) -> None:
+    """Re-render ``Reading List.md``, and print the subset the filters name.
+
+    The filters narrow what is printed, never what is written: the note is the
+    whole pending set by definition. This is also the command to run after
+    hand-editing ``screening.tsv``.
+    """
+    papers_dir = _papers_dir()
+    try:
+        pending = screening.pending(screening.load(papers_dir))
+    except screening.ScreeningError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    path, _ = _render_reading_list(papers_dir)
+    selector = _selector(
+        papers_dir,
+        query=query,
+        seed=seed,
+        via=via,
+        min_year=min_year,
+        min_citations=min_citations,
+    )
+    selected = reading_list.select(pending, selector, limit=limit)
+
+    if as_json:
+        typer.echo(json.dumps([_pending_as_dict(row) for row in selected], indent=2))
+        return
+
+    typer.secho(
+        f"{len(pending)} pending · showing {len(selected)} · {path}",
+        fg=typer.colors.CYAN,
+    )
+    _print_pending(selected)
+
+
+def _vault_root(papers_dir: Path) -> Path | None:
+    """The nearest ancestor holding a ``.obsidian/`` directory."""
+    for directory in [papers_dir, *papers_dir.parents]:
+        if (directory / ".obsidian").is_dir():
+            return directory
+    return None
+
+
+def _obsidian_uri(note: Path, *, papers_dir: Path) -> str:
+    """``obsidian://open?vault=…&file=…``, both percent-encoded.
+
+    Guessing a vault name is worse than saying so, the same stance
+    ``--papers-dir`` takes, so a vault that cannot be identified is an error
+    with ``OBSIDIAN_VAULT`` named as the fix.
+    """
+    root = _vault_root(papers_dir)
+    name = os.environ.get("OBSIDIAN_VAULT") or (root.name if root else None)
+    if not name:
+        looked = ", ".join(str(d) for d in [papers_dir, *papers_dir.parents])
+        typer.secho(
+            "Could not tell which Obsidian vault this is: no .obsidian/ in "
+            f"{looked}. Set OBSIDIAN_VAULT to the vault's name.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    # Obsidian resolves a bare note name like a wikilink, so a vault named by
+    # the environment alone still opens the right note.
+    relative = (
+        note.relative_to(root).with_suffix("").as_posix()
+        if root is not None and note.is_relative_to(root)
+        else note.stem
+    )
+    return "obsidian://open?" + urllib.parse.urlencode(
+        {"vault": name, "file": relative}
+    )
+
+
+def _launch(target: str) -> bool:
+    """Hand a path or a URI to the platform's opener. Reports rather than raises."""
+    try:
+        if sys.platform == "win32":
+            os.startfile(target)
+        else:
+            opener = "open" if sys.platform == "darwin" else "xdg-open"
+            completed = subprocess.run([opener, target], check=False)
+            if completed.returncode != 0:
+                typer.secho(
+                    f"{opener} exited {completed.returncode} on {target}",
+                    fg=typer.colors.YELLOW,
+                    err=True,
+                )
+                return False
+    except OSError as exc:
+        typer.secho(f"Could not open {target}: {exc}", fg=typer.colors.YELLOW, err=True)
+        return False
+    return True
+
+
+@app.command(name="open")
+def open_(
+    target: Annotated[str, typer.Argument(help="Cite key, note name or DOI")],
+    pdf_only: Annotated[
+        bool, typer.Option("--pdf", help="Only the PDF, in the default viewer")
+    ] = False,
+    note_only: Annotated[
+        bool, typer.Option("--note", help="Only the note, in Obsidian")
+    ] = False,
+) -> None:
+    """Open a paper: its PDF in the default viewer, its note in Obsidian."""
+    papers_dir = _papers_dir()
+    records = _load(papers_dir)
+    try:
+        record = search.resolve(records, target)
+    except search.SearchError as exc:
+        # A pending candidate resolves to nothing, and the reason is worth
+        # saying: `open` is a read verb and must not promote anything itself.
+        ledger = screening.load(papers_dir)
+        found = ledger.lookup(
+            openalex_id=sources.as_openalex_id(target),
+            doi=sources.normalize_doi(target),
+        )
+        if found is not None and found.decision == screening.PENDING:
+            typer.secho(
+                f"{target!r} is not in the vault — promote it first: "
+                f"research-assistant promote {found.openalex_id or found.doi}",
+                fg=typer.colors.RED,
+                err=True,
+            )
+            raise typer.Exit(1) from exc
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    want_pdf = pdf_only or not note_only
+    want_note = note_only or not pdf_only
+
+    if want_pdf:
+        if record.pdf_path is not None:
+            _launch(str(record.pdf_path))
+        else:
+            typer.secho(
+                f"No PDF on disk for {record.cite_key}"
+                + (f"; fetchable at {record.pdf_url}" if record.pdf_url else ""),
+                fg=typer.colors.YELLOW,
+                err=True,
+            )
+            # The note is still openable, so only the PDF-only form fails.
+            if pdf_only:
+                raise typer.Exit(1)
+
+    if want_note:
+        _launch(_obsidian_uri(record.path, papers_dir=papers_dir))
 
 
 @app.command()

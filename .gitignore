@@ -25,3 +25,6 @@ venv/
 .coverage
 coverage.xml
 htmlcov/
+
+# Spec scratchpad
+.claude/specs/

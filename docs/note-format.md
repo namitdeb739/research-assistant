@@ -23,11 +23,14 @@ tool you point at the folder all depend on it.
 ├── Energy Harvesting.md     generated hub notes, one per shared theme
 └── …
 ../screening.tsv             what was looked at and turned down
+../Reading List.md           the pending rows of the ledger, rendered
 ```
 
-`pdfs/`, `topics/` and `screening.tsv` are **siblings** of the papers folder,
-not children of it. The ledger is not part of this format and has its own:
-[`docs/screening.md`](screening.md).
+`pdfs/`, `topics/`, `screening.tsv` and `Reading List.md` are **siblings** of
+the papers folder, not children of it. The ledger is not part of this format and
+has its own: [`docs/screening.md`](screening.md). `Reading List.md` is a
+generated view of that ledger and is **not a paper note**: it has none of the
+frontmatter below, and nothing reads it back.
 
 A note is named for its **title**, sanitised for the filesystem; a PDF is named
 for its **cite key**. So the filename guards nothing about the key: two papers
