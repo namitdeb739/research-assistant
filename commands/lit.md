@@ -14,7 +14,10 @@ Usage: `/lit <topic>`, e.g. `/lit multi-tenant sensor network virtualization`
    summary of its abstract.
 5. **Rank by relevance to what the user is working on**, not by citation count. A
    directly-applicable workshop paper beats a famous but tangential one.
-6. **Offer to add the useful ones** with `research-assistant paper <doi>`.
+6. **Offer to add the useful ones** with `research-assistant paper <doi>`, and to
+   record the ones judged and rejected with `research-assistant expand --exclude
+   <doi> --reason "…"`. A rejection is the more perishable of the two: the vault
+   remembers what was added, and only the ledger remembers what was considered.
 
 Say so explicitly when a search turns up little. A genuinely thin literature is a
 finding worth knowing, and padding the list with tangential hits wastes reading

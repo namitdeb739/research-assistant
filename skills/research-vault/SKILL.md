@@ -24,21 +24,39 @@ and generalising is the failure mode these commands exist to replace.
 | `show <key>` | One whole note |
 | `near <key>` | Graph neighbours: cited, and citing |
 | `pdf <key>` | An absolute path on stdout, nothing else |
+| `cite-check <file.tex…>` | Which `\cite` keys in a draft have no note behind them |
+| `health` | Retracted papers, duplicate preprint/version-of-record pairs |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
-authors (×1). Deterministic, no index, no model. These four never write.
+authors (×1). Deterministic, no index, no model. These six never write, except
+`health --fix`, which writes one key and nothing else.
 
 ## Query technique
 
 | Property | Consequence |
 |---|---|
 | Terms are **OR-ed** | Throwing synonyms in together widens the net: `find "intermittent batteryless transiently powered"` |
-| **No stemmer** | `backscatter` does not match `backscattering`. If a query looks thin, re-run with the field's own vocabulary before concluding anything. |
+| **No stemmer** | `backscatter` does not reach `backscattering` on its own. `--expand` is the escape hatch, not a default. |
 | Filters apply **before** ranking | `find "backscatter tag" --topic "Energy Harvesting"` |
 | Filters with **no query** | Lists the filtered set by citation count: the "show me the shelf" mode |
 
-Filters: `--topic`, `--tag`, `--venue`, `--min-year`, `--max-year`,
-`--min-citations`, `--has-pdf` / `--no-pdf`, `--limit`, `--full`, `--json`.
+Filters: `--author`, `--topic`, `--tag`, `--venue`, `--min-year`, `--max-year`,
+`--min-citations`, `--has-pdf` / `--no-pdf`, `--retracted` / `--not-retracted`,
+`--limit`, `--full`, `--json`.
+
+Three query forms go beyond bare words:
+
+| Form | Does |
+|---|---|
+| `find '"work stealing"'` | Requires the phrase, adjacent. Also the only way to search a word the stopword list eats — `work`, `use`, `result`, `approach` |
+| `find title:backscatter` | Scores that term over one field alone, with the field's own statistics |
+| `find backscatter --expand` | Also matches longer words **the vault already contains** sharing a 5-character prefix, at half weight |
+
+**Reach for `--expand` when a query came back thin, not by reflex.** It is a
+large widening — on a 184-note vault `harvest` goes from 6 hits to 70 — so it
+trades precision for recall, and a thin result is often the true answer. It
+imposes no morphology of its own: `bio` reaches nothing, because the prefix floor
+is longer than the word.
 
 **On an ambiguous term, filter first.** A word meaning two things in two fields
 cannot be separated by ranking, because both senses match it equally well. And
@@ -77,6 +95,8 @@ before making a coverage claim.
 | `topics` | Wikilinks to hub notes in `topics/`. A topic earns a hub only once several papers share it. |
 | `near` | Derives "cited by" by scanning every note's `cites`; there is deliberately no `cited_by`. Its unresolved count says how much of a paper's bibliography `expand` has not pulled in. |
 | Titles | Sometimes truncated upstream: Crossref records Mementos as just "Mementos". Check the PDF before quoting a title. |
+| `retracted` | `null`, or the notice type (`retraction`, `expression_of_concern`, …). Set from Crossref, never by hand. **Check it before recommending a citation** — an expression of concern is not a retraction, and the distinction decides whether the paper is still citable. |
+| `screening.tsv` | A sibling of the notes, not frontmatter. Holds what was **turned down**; the notes hold what was kept. A paper absent from the vault is not necessarily unknown to it. |
 
 ## The write side
 
@@ -86,7 +106,16 @@ Notes are write-once and Obsidian owns them.
 |---|---|
 | `paper <doi\|openalex-id>` | One new note |
 | `source --title … --author …` | One note for what no index knows |
-| `expand` | Notes one hop out along the citation graph |
-| `relink` | `cites`, `topics`, and the hub notes |
-| `tidy` | Note bodies, missing abstracts, the `read` tag |
-| `bib --out <file>` | The bibliography |
+| `expand` | Notes one hop out along the citation graph, plus a ledger row each |
+| `relink` | `cites`, `topics`, the citation count, and the hub notes |
+| `tidy` | Note bodies, missing abstracts, the `read` tag, key order; `--bibfields` fills volume/pages/publisher from Crossref |
+| `bib --out <file>` | The bibliography. `bib --check` audits cite keys without writing |
+
+**A decision not to add a paper is worth recording.** `expand --exclude <doi|id>
+--reason "…"` appends a row to `screening.tsv`, and `expand` then never surfaces
+that paper again. Without it a rejected paper returns on every run, and there is
+no record that it was ever considered — which is also what `--report` turns into
+the four PRISMA numbers for a systematic review.
+
+Never edit `screening.tsv` by hand to undo a decision: it is append-only, and
+`expand --include <id>` is how you reverse one.
