@@ -86,6 +86,174 @@ def test_render_sorts_by_cite_key_and_keeps_header() -> None:
     assert out.index("alpha2019b") < out.index("zeta2020a")
 
 
+# The shape Crossref actually returns for the retracted Lancet/Surgisphere
+# paper: `updated-by` carries the back-pointer, and Elsevier registered
+# `update-to` on the article as well, which is why that field is not used.
+LANCET = {
+    "title": ["Hydroxychloroquine or chloroquine with or without a macrolide"],
+    "DOI": "10.1016/s0140-6736(20)31180-6",
+    "update-to": [{"DOI": "10.1016/s0140-6736(20)31324-6", "type": "retraction"}],
+    "updated-by": [
+        {
+            "DOI": "10.1016/s0140-6736(20)31324-6",
+            "type": "retraction",
+            "source": "retraction-watch",
+            "updated": {"date-time": "2020-06-05T00:00:00Z"},
+        },
+        {
+            "DOI": "10.1016/s0140-6736(20)31290-3",
+            "type": "expression_of_concern",
+            "source": "publisher",
+            "updated": {"date-time": "2020-06-02T00:00:00Z"},
+        },
+    ],
+}
+
+
+def test_the_strongest_notice_wins_over_an_expression_of_concern() -> None:
+    assert sources.strongest(sources.notices(LANCET)) == "retraction"
+
+
+def test_update_to_on_the_retracted_article_is_ignored() -> None:
+    """Elsevier registers it on both sides, so it cannot tell them apart."""
+    only_update_to = {"update-to": LANCET["update-to"]}
+
+    assert sources.notices(only_update_to) == ()
+    assert sources.strongest(sources.notices(only_update_to)) is None
+
+
+def test_an_erratum_is_reported_but_is_not_a_retraction() -> None:
+    message = {"updated-by": [{"DOI": "10.1/e", "type": "correction"}]}
+
+    found = sources.notices(message)
+
+    assert len(found) == 1
+    assert sources.strongest(found) is None
+
+
+def test_a_record_declaring_relation_retraction_is_the_notice_not_the_article() -> None:
+    """The notice's own declaration of what it retracts, not a title guess."""
+    notice = {"relation": {"retraction": [{"id": "10.1016/s0140-6736(20)31180-6"}]}}
+
+    assert sources.is_notice(notice)
+    assert not sources.is_notice(LANCET)
+
+
+def test_build_paper_records_a_retraction_without_a_second_request() -> None:
+    """`fetch_crossref` already returns the whole message."""
+    assert sources.build_paper(LANCET).retracted == "retraction"
+
+
+def test_build_paper_reads_the_fields_a_bibliography_needs() -> None:
+    message = {
+        "title": ["A paper"],
+        "DOI": "10.1/a",
+        "volume": "7",
+        "issue": "3",
+        "page": "1-28",
+        "publisher": "ACM",
+        "editor": [{"given": "Ada", "family": "Lovelace"}],
+        "published-print": {"date-parts": [[2023, 9, 14]]},
+    }
+
+    paper = sources.build_paper(message)
+
+    assert (paper.volume, paper.number, paper.pages) == ("7", "3", "1-28")
+    assert paper.publisher == "ACM"
+    assert paper.editors == ("Ada Lovelace",)
+    assert (paper.year, paper.month) == (2023, "9")
+
+
+def test_a_work_with_only_a_year_has_no_month() -> None:
+    paper = sources.build_paper(
+        {"title": ["A paper"], "issued": {"date-parts": [[2023]]}}
+    )
+
+    assert paper.year == 2023
+    assert paper.month is None
+
+
+def test_paper_from_openalex_joins_the_page_range() -> None:
+    """OpenAlex keeps it split, and is the only source for a work Crossref lacks."""
+    paper = sources.paper_from_openalex(
+        {
+            "title": "Passive Wi-Fi",
+            "biblio": {
+                "volume": "2",
+                "issue": "1",
+                "first_page": "5",
+                "last_page": "9",
+            },
+        }
+    )
+
+    assert paper.pages == "5--9"
+    assert (paper.volume, paper.number) == ("2", "1")
+
+
+def test_an_article_renders_volume_issue_and_pages() -> None:
+    """Every @article came out without them, which no reader forgives."""
+    paper = Paper(
+        title="Soil-Powered Computing",
+        authors=("Bill Yen",),
+        year=2023,
+        venue="IMWUT",
+        volume="7",
+        number="3",
+        pages="1--28",
+        entry_type="article",
+    )
+
+    out = bibtex.render_entry(paper, "yen2023soil")
+
+    assert "volume  = {7}" in out
+    assert "number  = {3}" in out
+    assert "pages   = {1--28}" in out
+
+
+def test_a_conference_paper_gets_no_volume_or_issue() -> None:
+    """Emitting every field everywhere is how a talk ends up with an issue number."""
+    paper = Paper(
+        title="Mementos",
+        authors=("Benjamin Ransford",),
+        year=2011,
+        venue="ASPLOS",
+        volume="7",
+        number="3",
+        pages="159--170",
+        publisher="ACM",
+        entry_type="inproceedings",
+    )
+
+    out = bibtex.render_entry(paper, "ransford2011mementos")
+
+    assert "volume" not in out
+    assert "number" not in out
+    assert "pages" in out
+    assert "publisher" in out
+
+
+def test_editors_render_as_one_and_joined_field() -> None:
+    paper = Paper(
+        title="A chapter",
+        editors=("Ada Lovelace", "Alan Turing"),
+        publisher="MIT Press",
+        entry_type="incollection",
+    )
+
+    out = bibtex.render_entry(paper, "anon2020chapter")
+
+    assert "editor" in out
+    assert "Ada Lovelace and Alan Turing" in out
+
+
+def test_a_retracted_paper_renders_no_extra_bibtex_field() -> None:
+    """`retracted` is a fact about the resource, not something biblatex knows."""
+    paper = Paper(title="Withdrawn", year=2020, retracted="retraction")
+
+    assert "retract" not in bibtex.render_entry(paper, "anon2020withdrawn")
+
+
 def test_render_refuses_to_write_a_bibliography_with_a_repeated_key() -> None:
     """BibTeX keeps one entry of two, so a citation would point at the wrong paper."""
     other = Paper(title="Something else entirely", authors=("John Madden",), year=2026)

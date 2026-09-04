@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import html
 import re
-from typing import Any
+from dataclasses import dataclass
+from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
 from research_assistant.http import USER_AGENT, get_with_retry
 from research_assistant.models import Paper
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
 
 CROSSREF_API = "https://api.crossref.org/works"
 OPENALEX_API = "https://api.openalex.org/works"
@@ -75,23 +79,115 @@ def _strip_jats(text: str) -> str:
     return unescape(" ".join(_JATS_TAG.sub("", text).split()))
 
 
-def _crossref_authors(item: dict[str, Any]) -> tuple[str, ...]:
-    authors: list[str] = []
-    for entry in item.get("author", []):
+def _crossref_names(item: dict[str, Any], key: str) -> tuple[str, ...]:
+    """Crossref's ``author`` and ``editor`` carry the same shape."""
+    names: list[str] = []
+    for entry in item.get(key, []):
         given = str(entry.get("given", "")).strip()
         family = str(entry.get("family", "")).strip()
         name = f"{given} {family}".strip() or str(entry.get("name", "")).strip()
         if name:
-            authors.append(name)
-    return tuple(authors)
+            names.append(name)
+    return tuple(names)
 
 
-def _crossref_year(item: dict[str, Any]) -> int | None:
+def _crossref_authors(item: dict[str, Any]) -> tuple[str, ...]:
+    return _crossref_names(item, "author")
+
+
+def _date_parts(item: dict[str, Any]) -> list[int] | None:
+    """The first complete publication date Crossref offers, newest source first."""
     for key in ("published-print", "published-online", "issued", "created"):
         parts = item.get(key, {}).get("date-parts")
         if parts and parts[0] and parts[0][0] is not None:
-            return int(parts[0][0])
+            return [int(p) for p in parts[0] if p is not None]
     return None
+
+
+def _crossref_year(item: dict[str, Any]) -> int | None:
+    parts = _date_parts(item)
+    return parts[0] if parts else None
+
+
+def _crossref_month(item: dict[str, Any]) -> str | None:
+    """The month as a bare number. BibTeX styles decide how to render it."""
+    parts = _date_parts(item)
+    return str(parts[1]) if parts and len(parts) > 1 else None
+
+
+# Crossref's `updated-by` notice types, most severe first. `strongest` reports
+# the first of these it finds, so the order is the policy.
+RETRACTION_TYPES: Final[tuple[str, ...]] = (
+    "retraction",
+    "withdrawal",
+    "removal",
+    "partial_retraction",
+    "expression_of_concern",
+)
+# Reported by `health`, but not a reason to stop citing the paper.
+NOTICE_TYPES: Final[frozenset[str]] = frozenset(
+    {"correction", "erratum", "addendum", "clarification"}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class Notice:
+    """One `updated-by` entry: a later record that amends this one."""
+
+    doi: str
+    kind: str
+    source: str
+    date: str | None
+
+
+def notices(message: Mapping[str, Any]) -> tuple[Notice, ...]:
+    """Every amendment Crossref records against this work.
+
+    Keyed off ``updated-by`` and never ``update-to``. Elsevier registers
+    ``update-to`` on the retracted article as well as on the notice, so that
+    field cannot tell which side of the pair a record is. ``updated-by`` is
+    Crossref's own derived back-pointer and appears only on the amended work.
+    """
+    found: list[Notice] = []
+    seen: set[tuple[str, str]] = set()
+    for entry in message.get("updated-by", []) or []:
+        if not isinstance(entry, dict):
+            continue
+        kind = str(entry.get("type", "")).strip().lower()
+        doi = str(entry.get("DOI", "")).strip().lower()
+        if not kind or (doi, kind) in seen:
+            continue
+        seen.add((doi, kind))
+        updated = entry.get("updated")
+        date = None
+        if isinstance(updated, dict):
+            raw = updated.get("date-time")
+            date = str(raw)[:10] if raw else None
+        found.append(
+            Notice(
+                doi=doi,
+                kind=kind,
+                source=str(entry.get("source", "")).strip(),
+                date=date,
+            )
+        )
+    return tuple(found)
+
+
+def is_notice(message: Mapping[str, Any]) -> bool:
+    """Whether this record *is* a retraction notice rather than a retracted work.
+
+    ``relation.retraction`` is the notice's own declaration about what it
+    retracts, so it is a structural test and not a guess about the title.
+    """
+    relation = message.get("relation")
+    return isinstance(relation, dict) and bool(relation.get("retraction"))
+
+
+def strongest(found: Sequence[Notice]) -> str | None:
+    """The most serious retraction-class notice, or ``None`` if there is none."""
+    kinds = {notice.kind for notice in found}
+    return next((kind for kind in RETRACTION_TYPES if kind in kinds), None)
 
 
 def _first(value: Any) -> str | None:
@@ -100,6 +196,14 @@ def _first(value: Any) -> str | None:
     if isinstance(value, str) and value:
         return value
     return None
+
+
+def _str(value: Any) -> str | None:
+    """A scalar Crossref field as text, or ``None`` when it is absent or blank."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
 
 
 def fetch_crossref(doi: str, *, client: httpx.Client) -> dict[str, Any]:
@@ -183,16 +287,26 @@ def build_paper(
 
     doi = crossref.get("DOI")
     venue = _first(crossref.get("container-title"))
+    publisher = _str(crossref.get("publisher"))
     return Paper(
         title=unescape(" ".join(title.split())),
         authors=_crossref_authors(crossref),
         year=_crossref_year(crossref),
         doi=str(doi).lower() if doi else None,
         venue=unescape(venue) if venue else None,
+        volume=_str(crossref.get("volume")),
+        number=_str(crossref.get("issue")),
+        pages=_str(crossref.get("page")),
+        publisher=unescape(publisher) if publisher else None,
+        editors=_crossref_names(crossref, "editor"),
+        month=_crossref_month(crossref),
         abstract=abstract_text,
         url=str(crossref.get("URL")) if crossref.get("URL") else None,
         citations=citations,
         open_access=open_access,
+        # Free: `fetch_crossref` already returns the whole message, so a paper
+        # retracted before it was ever added is never filed as though it were not.
+        retracted=None if is_notice(crossref) else strongest(notices(crossref)),
         pdf_url=pdf_url,
         entry_type=_ENTRY_TYPES.get(str(crossref.get("type", "")), "article"),
     )
@@ -296,6 +410,16 @@ def paper_from_openalex(work: dict[str, Any]) -> Paper:
     if isinstance(best, dict) and isinstance(best.get("pdf_url"), str):
         pdf_url = str(best["pdf_url"])
 
+    # OpenAlex keeps the page range split, and is the only source for a work
+    # Crossref has never heard of.
+    biblio = work.get("biblio")
+    volume = number = pages = None
+    if isinstance(biblio, dict):
+        volume = _str(biblio.get("volume"))
+        number = _str(biblio.get("issue"))
+        first, last = _str(biblio.get("first_page")), _str(biblio.get("last_page"))
+        pages = f"{first}--{last}" if first and last else first
+
     normalized_doi = (
         str(doi).strip().removeprefix("https://doi.org/").lower()
         if isinstance(doi, str) and doi.strip()
@@ -307,6 +431,9 @@ def paper_from_openalex(work: dict[str, Any]) -> Paper:
         year=int(year) if isinstance(year, int) else None,
         doi=normalized_doi,
         venue=_openalex_venue(work),
+        volume=volume,
+        number=number,
+        pages=pages,
         abstract=_openalex_abstract(work),
         url=(
             f"https://doi.org/{normalized_doi}"

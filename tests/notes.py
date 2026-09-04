@@ -19,6 +19,12 @@ entry_type: inproceedings
 {authors}
 year: {year}
 venue: {venue}
+volume: null
+number: null
+pages: null
+publisher: null
+editors: []
+month: null
 doi: {doi}
 openalex_id: null
 url: null
@@ -27,6 +33,7 @@ pdf_url: {pdf_url}
 code_url: null
 citations: {citations}
 open_access: null
+retracted: {retracted}
 {topics}
 {cites}
 {tags}
@@ -58,6 +65,7 @@ def write_note(
     tags: tuple[str, ...] = ("paper",),
     pdf: str | None = None,
     pdf_url: str | None = None,
+    retracted: str | None = None,
 ) -> Path:
     """Write one note shaped exactly like the ones `just paper` produces."""
 
@@ -80,6 +88,7 @@ def write_note(
             doi=doi or "null",
             pdf=f"'[[{pdf}]]'" if pdf else "null",
             pdf_url=pdf_url or "null",
+            retracted=retracted or "null",
             citations="null" if citations is None else citations,
             topics=block("topics", topics, link=True),
             cites=block("cites", cites, link=True),

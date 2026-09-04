@@ -28,10 +28,22 @@ class Paper:
     year: int | None = None
     doi: str | None = None
     venue: str | None = None
+    # What a bibliography renders beyond the venue. Crossref has all of these
+    # and none of them reached the note, so every generated @article came out
+    # without a volume, issue or page range.
+    volume: str | None = None
+    number: str | None = None
+    pages: str | None = None
+    publisher: str | None = None
+    editors: tuple[str, ...] = ()
+    month: str | None = None
     abstract: str | None = None
     url: str | None = None
     citations: int | None = None
     open_access: str | None = None
+    # Crossref's strongest ``updated-by`` notice, or None. Intrinsic, derived,
+    # and retractable: nobody sets it by hand and a withdrawn notice clears it.
+    retracted: str | None = None
     pdf_url: str | None = None
     entry_type: str = "article"
     extra: dict[str, str] = field(default_factory=dict)

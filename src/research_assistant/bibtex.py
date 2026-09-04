@@ -47,6 +47,22 @@ _VENUE_FIELD = {
     "misc": "howpublished",
 }
 
+# Which of the bibliographic fields an entry type actually renders. A journal
+# article has a volume and an issue; a conference paper has neither and does
+# have a publisher. Emitting all of them everywhere is how a bibliography ends
+# up with `number = {}` on a talk.
+_TYPE_FIELDS: dict[str, tuple[str, ...]] = {
+    "article": ("volume", "number", "pages"),
+    "inproceedings": ("pages", "publisher", "editors"),
+    "incollection": ("volume", "pages", "publisher", "editors"),
+    "book": ("volume", "publisher", "editors"),
+    "phdthesis": ("publisher",),
+    "mastersthesis": ("publisher",),
+    "techreport": ("number", "publisher"),
+    "misc": (),
+}
+_DEFAULT_FIELDS: tuple[str, ...] = ("volume", "number", "pages", "publisher")
+
 
 def escape(value: str) -> str:
     """Escape LaTeX special characters in a field value."""
@@ -64,6 +80,16 @@ def render_entry(paper: Paper, key: str) -> str:
         fields.append(
             (_VENUE_FIELD.get(paper.entry_type, "journal"), escape(paper.venue))
         )
+    if paper.month:
+        fields.append(("month", paper.month))
+    for name in _TYPE_FIELDS.get(paper.entry_type, _DEFAULT_FIELDS):
+        if name == "editors":
+            if paper.editors:
+                fields.append(("editor", escape(" and ".join(paper.editors))))
+            continue
+        value = getattr(paper, name)
+        if value:
+            fields.append((name, escape(str(value))))
     if paper.doi:
         fields.append(("doi", paper.doi))
     if paper.url:

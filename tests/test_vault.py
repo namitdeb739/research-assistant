@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,6 +17,12 @@ PAPER = Paper(
     year=2023,
     doi="10.1145/3596262",
     venue="IMWUT",
+    volume="7",
+    number="3",
+    pages="1--28",
+    publisher="ACM",
+    editors=("Ada Lovelace",),
+    month="9",
     abstract="Soil microbial fuel cells power sensing.",
     url="https://doi.org/10.1145/3596262",
     citations=41,
@@ -61,11 +68,31 @@ def test_round_trip_preserves_the_record(tmp_path: Path) -> None:
         year=PAPER.year,
         doi=PAPER.doi,
         venue=PAPER.venue,
+        volume=PAPER.volume,
+        number=PAPER.number,
+        pages=PAPER.pages,
+        publisher=PAPER.publisher,
+        editors=PAPER.editors,
+        month=PAPER.month,
         url=PAPER.url,
         citations=PAPER.citations,
         open_access="gold",
+        retracted=None,
         entry_type=PAPER.entry_type,
     )
+
+
+def test_a_retracted_paper_round_trips_its_notice_kind(tmp_path: Path) -> None:
+    """A None-only assertion would pass against a `note_text` that forgot the key."""
+    vault.create_paper(
+        replace(PAPER, retracted="expression_of_concern"),
+        "yen2023soil",
+        papers_dir=tmp_path,
+    )
+
+    paper, _ = vault.read_all(papers_dir=tmp_path)[0]
+
+    assert paper.retracted == "expression_of_concern"
 
 
 def test_title_with_a_colon_survives_yaml(tmp_path: Path) -> None:
@@ -250,6 +277,39 @@ def test_index_builds_both_lookups(tmp_path: Path) -> None:
 
     assert by_doi[PAPER.doi or ""] == path
     assert by_openalex["W1"] == path
+
+
+def test_a_key_added_later_moves_into_its_proper_place(tmp_path: Path) -> None:
+    """`update_frontmatter` appends what it has not seen, so `tidy` reorders."""
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    text = path.read_text(encoding="utf-8").replace("retracted: null\n", "")
+    path.write_text(text, encoding="utf-8")
+    vault.update_frontmatter(path, {"retracted": "retraction"})
+    keys = list(vault.read_frontmatter(path))
+    assert keys[-1] == "retracted"  # appended, out of place
+
+    assert vault.reorder_frontmatter(path)
+
+    reordered = list(vault.read_frontmatter(path))
+    assert reordered == list(vault.FRONTMATTER_KEYS)
+    assert vault.read_frontmatter(path)["retracted"] == "retraction"
+
+
+def test_reordering_keeps_a_property_added_by_hand(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    vault.update_frontmatter(path, {"my_own_field": "kept"})
+
+    vault.reorder_frontmatter(path)
+
+    assert vault.read_frontmatter(path)["my_own_field"] == "kept"
+
+
+def test_reordering_a_canonical_note_changes_nothing(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    before = path.read_text(encoding="utf-8")
+
+    assert not vault.reorder_frontmatter(path)
+    assert path.read_text(encoding="utf-8") == before
 
 
 def test_cite_keys_names_every_note_claiming_one(tmp_path: Path) -> None:

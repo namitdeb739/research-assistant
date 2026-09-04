@@ -98,7 +98,7 @@ disk. Run it before making any coverage claim.
 | `source` | Record what no index knows | `--title` `--author` `--year` `--venue` `--url` `--type` `--pdf` `--key` |
 | `expand` | Walk the citation graph one hop | `--dry-run` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
 | `relink` | Rebuild `cites` links and topic hubs | |
-| `tidy` | Reformat bodies, adopt PDFs, fill abstracts | `--abstracts`/`--no-abstracts` |
+| `tidy` | Reformat bodies, adopt PDFs, fill abstracts, restore key order | `--abstracts`/`--no-abstracts` `--bibfields` |
 | `bib --out <file>` | Regenerate the bibliography | `--check` |
 
 Why they behave as they do:
@@ -116,6 +116,11 @@ Why they behave as they do:
   deeper on.
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
+- **`tidy --bibfields` is opt-in because it costs a request per note.** The
+  abstract backfill rides a batched OpenAlex call and is free; `volume`,
+  `number`, `pages`, `publisher`, `editors` and `month` come from Crossref one
+  DOI at a time. It writes only fields that are unset, so an interrupted run is
+  simply re-run.
 - **`bib` refuses to write a repeated cite key.** A note is named for its title
   and a cite key is a property, so two papers can claim one key and still get
   two filenames; BibTeX would keep one entry and a citation would point at the

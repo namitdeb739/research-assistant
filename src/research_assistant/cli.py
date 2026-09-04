@@ -724,11 +724,71 @@ def _backfill_openalex_ids(
     return repaired
 
 
+_BIBFIELDS = ("volume", "number", "pages", "publisher", "editors", "month")
+
+
+def _backfill_bibfields(papers_dir: Path, *, client: httpx.Client | None = None) -> int:
+    """Fill the fields a bibliography renders, from Crossref, for notes missing them.
+
+    One request per note, unlike the abstract backfill which rides a batched
+    OpenAlex call, which is why this is opt-in. Only unset fields are written,
+    so an interrupted run is simply re-run.
+    """
+    needing = [
+        (path, str(front["doi"]))
+        for path in sorted(papers_dir.glob("*.md"))
+        if (front := vault.read_frontmatter(path)).get("doi")
+        and not all(front.get(field) for field in _BIBFIELDS)
+    ]
+    if not needing:
+        return 0
+
+    owned = client is None
+    active = client or httpx.Client(follow_redirects=True)
+    filled = 0
+    try:
+        with typer.progressbar(needing, label="Crossref") as progress:
+            for path, doi in progress:
+                try:
+                    message = sources.fetch_crossref(
+                        sources.normalize_doi(doi), client=active
+                    )
+                except sources.SourceLookupError, httpx.HTTPError:
+                    continue
+                record = sources.build_paper(message)
+                front = vault.read_frontmatter(path)
+                updates = {
+                    field: value
+                    for field in _BIBFIELDS
+                    if not front.get(field)
+                    and (
+                        value := (
+                            list(record.editors)
+                            if field == "editors"
+                            else getattr(record, field)
+                        )
+                    )
+                }
+                if updates and vault.update_frontmatter(path, updates):
+                    filled += 1
+    finally:
+        if owned:
+            active.close()
+    return filled
+
+
 @app.command()
 def tidy(
     abstracts: Annotated[
         bool, typer.Option("--abstracts/--no-abstracts", help="Backfill from OpenAlex")
     ] = True,
+    bibfields: Annotated[
+        bool,
+        typer.Option(
+            "--bibfields",
+            help="Backfill volume, issue, pages, publisher and editors from Crossref",
+        ),
+    ] = False,
 ) -> None:
     """Reformat note bodies to the template, and fill any abstract still missing.
 
@@ -772,8 +832,13 @@ def tidy(
         else {}
     )
 
-    reformatted = adopted = unescaped = retagged = 0
+    enriched = _backfill_bibfields(papers_dir) if bibfields else 0
+
+    reformatted = adopted = unescaped = retagged = reordered = 0
     for path in sorted(papers_dir.glob("*.md")):
+        # Before the body work, so the note read below is already canonical.
+        if vault.reorder_frontmatter(path):
+            reordered += 1
         front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
         sections = vault.parse_body(body)
         if path in filled:
@@ -807,9 +872,15 @@ def tidy(
     typer.secho(
         f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s); "
         f"adopted {adopted} PDF(s); unescaped {unescaped} note(s); "
-        f"re-tagged {retagged} note(s) read/unread.",
+        f"re-tagged {retagged} note(s) read/unread; "
+        f"reordered {reordered} frontmatter block(s).",
         fg=typer.colors.GREEN,
     )
+    if bibfields:
+        typer.secho(
+            f"Filled bibliographic fields on {enriched} note(s).",
+            fg=typer.colors.GREEN,
+        )
     orphans = sorted(
         set(on_disk)
         - {
