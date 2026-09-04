@@ -5,89 +5,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 import pytest
+from notes import write_note
 
 from research_assistant import search
 
 if TYPE_CHECKING:
     from pathlib import Path
-
-NOTE = """---
-title: {title}
-cite_key: {key}
-entry_type: inproceedings
-{authors}
-year: {year}
-venue: {venue}
-doi: {doi}
-openalex_id: null
-url: null
-pdf: {pdf}
-pdf_url: {pdf_url}
-code_url: null
-citations: {citations}
-open_access: null
-{topics}
-{cites}
-{tags}
----
-
-## Abstract
-
-{abstract}
-
-## Notes
-
-"""
-
-
-def write_note(
-    papers_dir: Path,
-    name: str,
-    *,
-    key: str,
-    title: str | None = None,
-    authors: tuple[str, ...] = ("Ada Lovelace", "Alan Turing", "Grace Hopper"),
-    year: int = 2020,
-    venue: str = "SenSys",
-    doi: str | None = None,
-    citations: int | None = 10,
-    abstract: str = "",
-    topics: tuple[str, ...] = (),
-    cites: tuple[str, ...] = (),
-    tags: tuple[str, ...] = ("paper",),
-    pdf: str | None = None,
-    pdf_url: str | None = None,
-) -> Path:
-    """Write one note shaped exactly like the ones `just paper` produces."""
-
-    def block(key: str, items: tuple[str, ...], *, link: bool = False) -> str:
-        """A YAML list property: inline when empty, one item per line when not."""
-        if not items:
-            return f"{key}: []"
-        rendered = "\n".join(f"- '[[{i}]]'" if link else f"- {i}" for i in items)
-        return f"{key}:\n{rendered}"
-
-    papers_dir.mkdir(parents=True, exist_ok=True)
-    path = papers_dir / f"{name}.md"
-    path.write_text(
-        NOTE.format(
-            title=title if title is not None else name,
-            key=key,
-            authors=block("authors", authors),
-            year=year,
-            venue=venue,
-            doi=doi or "null",
-            pdf=f"'[[{pdf}]]'" if pdf else "null",
-            pdf_url=pdf_url or "null",
-            citations="null" if citations is None else citations,
-            topics=block("topics", topics, link=True),
-            cites=block("cites", cites, link=True),
-            tags=block("tags", tags),
-            abstract=abstract,
-        ),
-        encoding="utf-8",
-    )
-    return path
 
 
 @pytest.fixture
@@ -402,3 +325,104 @@ def test_a_note_without_a_title_is_skipped_not_fatal(vault_dir: Path) -> None:
 def test_loading_a_missing_folder_says_which_one(tmp_path: Path) -> None:
     with pytest.raises(search.SearchError, match="VAULT_PAPERS_DIR"):
         search.load(tmp_path / "nowhere")
+
+
+def test_an_author_filter_matches_any_listed_name(vault_dir: Path) -> None:
+    records = search.load(vault_dir)
+
+    assert len(search.apply_filters(records, author="turing")) == 3
+    assert search.apply_filters(records, author="Nobody") == []
+
+
+def test_a_quoted_phrase_must_appear_verbatim(vault_dir: Path) -> None:
+    """Both words rank the note; the phrase then filters what ranked."""
+    write_note(
+        vault_dir, "Two words apart", key="a2020apart", abstract="stealing then work"
+    )
+    write_note(
+        vault_dir, "Two words together", key="a2020together", abstract="work stealing"
+    )
+    records = search.load(vault_dir)
+
+    loose = {hit.record.cite_key for hit in search.rank(records, "work stealing")}
+    exact = {hit.record.cite_key for hit in search.rank(records, '"work stealing"')}
+
+    assert "a2020together" in exact
+    assert "a2020apart" not in exact
+    assert "a2020apart" in loose or not loose
+
+
+def test_a_phrase_keeps_words_the_stopword_list_eats(vault_dir: Path) -> None:
+    """`work` is a stopword, so quoting has to bypass the filter or be useless."""
+    parsed = search.parse_query('"work stealing"')
+
+    assert parsed.phrases == ("work stealing",)
+    assert "work" in parsed.terms
+
+
+def test_a_field_scope_restricts_where_a_term_counts(vault_dir: Path) -> None:
+    write_note(vault_dir, "Backscatter in the title", key="a2020title")
+    write_note(
+        vault_dir, "Something else", key="a2020body", abstract="all about backscatter"
+    )
+    records = search.load(vault_dir)
+
+    scoped = {hit.record.cite_key for hit in search.rank(records, "title:backscatter")}
+
+    assert "a2020title" in scoped
+    assert "a2020body" not in scoped
+
+
+def test_an_unknown_field_prefix_is_treated_as_an_ordinary_term() -> None:
+    parsed = search.parse_query("nosuchfield:backscatter")
+
+    assert parsed.scope is None
+
+
+def test_prefix_expansion_reaches_a_longer_form_of_the_same_word(
+    vault_dir: Path,
+) -> None:
+    """The stemmer objection stands; this imposes only the corpus's own terms."""
+    write_note(
+        vault_dir, "Tag reading", key="a2020tags", abstract="backscattering tags"
+    )
+    records = search.load(vault_dir)
+
+    plain = {hit.record.cite_key for hit in search.rank(records, "backscatter")}
+    wider = {
+        hit.record.cite_key for hit in search.rank(records, "backscatter", expand=True)
+    }
+
+    assert "a2020tags" not in plain
+    assert "a2020tags" in wider
+
+
+def test_prefix_expansion_does_not_reach_a_short_word() -> None:
+    """`bio` must not reach `bios`: the floor is longer than the word."""
+    assert search._expansions("bio", {"bios", "biology"}) == set()
+
+
+def test_prefix_expansion_never_shortens() -> None:
+    assert search._expansions("backscatter", {"backsc"}) == set()
+
+
+def test_an_expansion_never_outranks_the_word_that_was_typed(tmp_path: Path) -> None:
+    """A rarer inflection is not stronger evidence than the query term itself.
+
+    Scored on its own IDF, `backscattering` in one note beats `backscatter` in
+    thirty even at half weight, and every exact title match sinks below it.
+    """
+    papers = tmp_path / "papers"
+    for index in range(8):
+        write_note(
+            papers,
+            f"Common {index}",
+            key=f"a20{index}0common",
+            abstract="backscatter",
+        )
+    write_note(papers, "Rare inflection", key="a2090rare", abstract="backscattering")
+    records = search.load(papers)
+
+    hits = search.rank(records, "backscatter", expand=True)
+
+    assert hits[-1].record.cite_key == "a2090rare"

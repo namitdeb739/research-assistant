@@ -76,19 +76,74 @@ skills never describe a CLI you do not have. It adds:
 
 | Command | Does | Notable flags |
 |---|---|---|
-| `find <query…>` | Ranked search, best match first | `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--limit` `--full` `--json` |
+| `find <query…>` | Ranked search, best match first | `--author` `--topic` `--tag` `--venue` `--min-year` `--max-year` `--min-citations` `--has-pdf`/`--no-pdf` `--retracted` `--expand` `--limit` `--full` `--json` |
 | `show <target…>` | Whole notes, by cite key, note name or DOI | |
 | `near <target>` | What it cites, and what in the vault cites it | |
 | `pdf <key>` | The note↔PDF join, both directions | `--note <file>` `--audit` |
+| `cite-check <file.tex…>` | Reconcile a document's `\cite` keys against the vault | `--bib` `--unused`/`--no-unused` |
+| `health` | Retractions, duplicate pairs, and metadata drift | `--drift` `--no-retractions` `--no-duplicates` `--fix` |
 
 Ranking is BM25 over title (×3), topics (×2), and abstract, notes, venue and
-authors (×1). No index, no embeddings. Terms are OR-ed and there is no stemmer,
-so `backscatter` does not match `backscattering`. With filters but no
+authors (×1). No index, no embeddings. Terms are OR-ed. With filters but no
 query, `find` lists the filtered set by citation count.
+
+The query itself takes three forms beyond bare words:
+
+| Form | Means |
+|---|---|
+| `"work stealing"` | Both words must appear adjacently. Quoting also rescues words the stopword list eats — `work`, `use`, `result`, `approach` |
+| `title:backscatter` | Score the term over that field alone. The field statistics are recomputed over it, so the scores stay comparable |
+| `--expand` | Also match longer words in the vault sharing a 5-character prefix, at half weight |
+
+`--expand` is opt-in, and stays that way. It is not a stemmer: it imposes no
+morphology, only prefixes the corpus already contains, so `backscatter` reaches
+`backscattering` while `bio` reaches nothing (the floor is longer than the
+word). Measured on a 184-note vault it is a large widening — `harvest` goes from
+6 hits to 70 — which is what you want when you typed a stem and nothing came
+back, and not what you want by default. An expansion is scored with the IDF of
+the term you typed rather than its own, or a single rare inflection would
+outrank every exact title match.
 
 `pdf` prints one absolute path on stdout and nothing else, so it pipes straight
 into a reader. `pdf --audit` reconciles what the notes claim against what is on
 disk. Run it before making any coverage claim.
+
+`cite-check` is the one command that looks at what you are actually writing. It
+pulls the keys out of a `.tex` file (every `\cite` variant, optional arguments
+and comma lists included) and diffs them against the vault. A key with no note
+behind it is an unresolvable citation, so it exits non-zero; notes cited nowhere
+are only reported, because a vault is meant to be larger than any one paper.
+
+```bash
+research-assistant cite-check thesis.tex chapters/*.tex
+research-assistant cite-check --bib refs.bib     # keys defined, not cited
+```
+
+`health` is the maintenance pass. Citing a retracted paper in a thesis is a
+career-grade error, and a corpus kept over years silently accumulates
+preprint/version-of-record pairs. It exits non-zero on any finding, so it works
+as a CI gate, and about five Crossref requests cover a 180-note vault.
+
+```bash
+research-assistant health              # retractions and duplicate pairs
+research-assistant health --drift      # also compare title/venue/year with Crossref
+research-assistant health --fix        # write the `retracted` key. Nothing else.
+```
+
+Retractions are keyed off Crossref's `updated-by`, never `update-to`: publishers
+register `update-to` on the retracted article as well as on the notice, so it
+cannot tell the two apart.
+
+**`--drift` is opt-in, and it is a prompt for review rather than a defect list.**
+A venue you deliberately shortened to `IMWUT` reads as drift against Crossref's
+full proceedings title, and Crossref truncates some titles the note records in
+full — so the note is often the better record. Nothing is ever auto-applied.
+
+**`health` never merges a duplicate.** The preprint's note may hold your
+highlights and the published one may not, and no rule can decide which prose
+survives. It prints the pair and the two commands that would resolve it: delete
+the note, and record why in the screening ledger so `expand` never brings it
+back.
 
 ### Write
 
@@ -96,10 +151,10 @@ disk. Run it before making any coverage claim.
 |---|---|---|
 | `paper <doi\|openalex-id>` | Look one up and add it | `--force` |
 | `source` | Record what no index knows | `--title` `--author` `--year` `--venue` `--url` `--type` `--pdf` `--key` |
-| `expand` | Walk the citation graph one hop | `--dry-run` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
+| `expand` | Walk the citation graph one hop | `--dry-run` `--screen` `--report` `--adopt` `--include` `--exclude` `--reason` `--backward` `--forward` `--related` `--pdfs` `--min-year` `--limit` |
 | `relink` | Rebuild `cites` links and topic hubs | |
-| `tidy` | Reformat bodies, adopt PDFs, fill abstracts | `--abstracts`/`--no-abstracts` |
-| `bib --out <file>` | Regenerate the bibliography | |
+| `tidy` | Reformat bodies, adopt PDFs, fill abstracts, restore key order | `--abstracts`/`--no-abstracts` `--bibfields` |
+| `bib --out <file>` | Regenerate the bibliography | `--check` |
 
 Why they behave as they do:
 
@@ -114,8 +169,25 @@ Why they behave as they do:
 - **`expand` walks out from every note *not* tagged `harvested`,** so re-running
   it never quietly reaches depth 2. Drop that tag from the paper worth going
   deeper on.
+- **`expand` remembers what you turned down.** Decisions go in a sibling
+  `screening.tsv`, not in frontmatter: an exclusion is a fact about your search
+  process, not about the paper, and an excluded paper has no note to hold it
+  anyway. A note that exists always beats the ledger, and `--report` prints the
+  four PRISMA numbers plus wherever the two disagree. See
+  [`docs/screening.md`](docs/screening.md).
 - **`relink` writes links, not labels.** A plain string groups a table fine but
   is not a node. A topic earns a hub only once several papers share it.
+- **`tidy --bibfields` is opt-in because it costs a request per note.** The
+  abstract backfill rides a batched OpenAlex call and is free; `volume`,
+  `number`, `pages`, `publisher`, `editors` and `month` come from Crossref one
+  DOI at a time. It writes only fields that are unset, so an interrupted run is
+  simply re-run.
+- **`bib` refuses to write a repeated cite key.** A note is named for its title
+  and a cite key is a property, so two papers can claim one key and still get
+  two filenames; BibTeX would keep one entry and a citation would point at the
+  wrong paper. `bib --check` audits without writing. It never renames, because a
+  cite key is a recorded fact and inventing one at render time would make the
+  bibliography disagree with the vault.
 - **`tidy` owns the note body.** See [what a tool may
   overwrite](docs/note-format.md#what-a-tool-may-overwrite). Section content is
   only moved, never rewritten; unknown headings are preserved.

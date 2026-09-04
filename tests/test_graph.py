@@ -10,7 +10,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 
-from research_assistant import graph, sources
+from research_assistant import graph, http, sources
 
 if TYPE_CHECKING:
     import httpx
@@ -19,8 +19,10 @@ if TYPE_CHECKING:
 class FakeResponse:
     """Just enough of ``httpx.Response`` for the graph layer."""
 
-    def __init__(self, payload: dict[str, Any]) -> None:
+    def __init__(self, payload: dict[str, Any], status_code: int = 200) -> None:
         self._payload = payload
+        self.status_code = status_code
+        self.headers: dict[str, str] = {}
 
     def raise_for_status(self) -> None:
         return None
@@ -32,14 +34,18 @@ class FakeResponse:
 class FakeClient:
     """Records the params of every GET and replays queued payloads."""
 
-    def __init__(self, payloads: list[dict[str, Any]]) -> None:
+    def __init__(
+        self, payloads: list[dict[str, Any]], statuses: list[int] | None = None
+    ) -> None:
         self.payloads = payloads
+        self.statuses = statuses or []
         self.calls: list[dict[str, str]] = []
 
     def get(self, url: str, **kwargs: Any) -> FakeResponse:
         self.calls.append(dict(kwargs.get("params") or {}))
         return FakeResponse(
-            self.payloads.pop(0) if self.payloads else {"results": [], "meta": {}}
+            self.payloads.pop(0) if self.payloads else {"results": [], "meta": {}},
+            self.statuses.pop(0) if self.statuses else 200,
         )
 
 
@@ -288,10 +294,19 @@ def test_retry_after_prefers_the_header() -> None:
             return "7"
 
     response = cast("httpx.Response", type("R", (), {"headers": Headers()})())
-    assert sources._retry_after(response, 0) == 7.0
+    assert http.retry_after(response, 0) == 7.0
 
 
 def test_retry_after_falls_back_to_exponential_backoff() -> None:
     response = cast("httpx.Response", type("R", (), {"headers": {}})())
-    assert sources._retry_after(response, 0) == sources.BACKOFF_SECONDS
-    assert sources._retry_after(response, 2) == sources.BACKOFF_SECONDS * 4
+    assert http.retry_after(response, 0) == http.BACKOFF_SECONDS
+    assert http.retry_after(response, 2) == http.BACKOFF_SECONDS * 4
+
+
+def test_a_batched_openalex_call_retries_a_transient_error() -> None:
+    """The graph layer carries the bulk of the traffic, so it retries too."""
+    client = FakeClient([{"results": []}, {"results": []}], statuses=[503, 200])
+
+    graph._get({"filter": "openalex_id:W1"}, client=client, sleep=lambda _: None)  # type: ignore[arg-type]
+
+    assert len(client.calls) == 2

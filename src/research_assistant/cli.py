@@ -1,9 +1,12 @@
-"""Deterministic reference management: Crossref/OpenAlex to Obsidian to BibTeX."""
+"""Reference management for an Obsidian vault: Crossref/OpenAlex to notes to BibTeX."""
 
 from __future__ import annotations
 
 import collections
+import datetime as dt
 import json
+import re
+from dataclasses import dataclass
 
 # Typer resolves these annotations at runtime through get_type_hints(), so
 # `Path` cannot move into the type-checking block despite only appearing in
@@ -14,11 +17,20 @@ from typing import TYPE_CHECKING, Annotated, Any
 import httpx
 import typer
 
-from research_assistant import bibtex, graph, highlights, search, sources, vault
+from research_assistant import (
+    bibtex,
+    graph,
+    health,
+    highlights,
+    screening,
+    search,
+    sources,
+    vault,
+)
 from research_assistant.models import Paper
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
+    from collections.abc import Container, Sequence
 
 app = typer.Typer(add_completion=False, help=__doc__)
 
@@ -65,6 +77,13 @@ def _describe(record: Paper) -> None:
     typer.echo(f"  {record.venue or 'unknown venue'} ({record.year or 'n.d.'})")
 
 
+def _unclaimed_key(key: str, taken: Container[str]) -> str:
+    """A cite key no note in the vault already claims."""
+    while key in taken:
+        key = f"{key}a"  # two papers, same author, year and first word
+    return key
+
+
 def _existing_note(
     record: Paper, openalex_id: str | None, *, papers_dir: Path
 ) -> Path | None:
@@ -102,7 +121,12 @@ def paper(
         _describe(record)
 
         papers_dir = _papers_dir()
-        key = record.cite_key()
+        key = _unclaimed_key(record.cite_key(), vault.cite_keys(papers_dir))
+        if key != record.cite_key():
+            typer.secho(
+                f"Cite key {record.cite_key()} is taken; using {key}.",
+                fg=typer.colors.YELLOW,
+            )
         try:
             if not force:
                 existing = _existing_note(record, openalex_id, papers_dir=papers_dir)
@@ -179,7 +203,18 @@ def source(
     papers_dir = _papers_dir()
     # A corporate author has no surname, so the derived key takes the last word
     # of the organisation's name: "distribuidas2020waspmote" for Libelium.
-    cite_key = key or record.cite_key()
+    claimed = vault.cite_keys(papers_dir)
+    if key is not None:
+        cite_key = key
+        if cite_key in claimed:
+            # A hand-picked key is the point of --key, so this reports and does
+            # not repair: only you know whether the clash is the same resource.
+            typer.secho(
+                f"{cite_key} is already claimed by {claimed[cite_key][0].name}.",
+                fg=typer.colors.YELLOW,
+            )
+    else:
+        cite_key = _unclaimed_key(record.cite_key(), claimed)
     try:
         pdf_name = (
             vault.save_pdf(
@@ -220,19 +255,72 @@ def _save_pdf(
     return path.name
 
 
+_KEY_SHAPE = re.compile(r"^[a-z0-9]+$")
+
+
+def _print_key_audit(papers_dir: Path) -> bool:
+    """Report cite keys the vault cannot spell or claims twice. True if clean."""
+    claimed = vault.cite_keys(papers_dir)
+    collisions = {key: paths for key, paths in claimed.items() if len(paths) > 1}
+    malformed = sorted(key for key in claimed if not _KEY_SHAPE.match(key))
+
+    total = sum(len(paths) for paths in claimed.values())
+    typer.secho(
+        f"{total} notes · {len(claimed)} cite keys · {len(collisions)} collision(s)",
+        fg=typer.colors.CYAN,
+    )
+    for key, paths in sorted(collisions.items()):
+        typer.secho(f"  {key}", fg=typer.colors.YELLOW)
+        for path in paths:
+            typer.echo(f"    {path.name}")
+    if malformed:
+        typer.secho(
+            f"\n{len(malformed)} key(s) are not [a-z0-9]: {', '.join(malformed[:8])}",
+            fg=typer.colors.YELLOW,
+        )
+    return not collisions and not malformed
+
+
 @app.command()
 def bib(
-    out: Annotated[Path, typer.Option("--out", help="Where to write the bibliography")],
+    out: Annotated[
+        Path | None, typer.Option("--out", help="Where to write the bibliography")
+    ] = None,
+    check: Annotated[
+        bool,
+        typer.Option("--check", help="Audit the cite keys and write nothing"),
+    ] = False,
 ) -> None:
     """Regenerate a BibTeX bibliography from the Obsidian vault."""
+    papers_dir = _papers_dir()
+    if check:
+        if out is not None:
+            typer.secho(
+                "Give either --out <file> or --check.", fg=typer.colors.RED, err=True
+            )
+            raise typer.Exit(1)
+        raise typer.Exit(0 if _print_key_audit(papers_dir) else 1)
+    if out is None:
+        typer.secho(
+            "Give either --out <file> or --check.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+
     try:
-        entries = vault.read_all(papers_dir=_papers_dir())
+        entries = vault.read_all(papers_dir=papers_dir)
     except vault.VaultError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
 
+    try:
+        rendered = bibtex.render(entries)
+    except bibtex.BibtexError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        typer.secho("Run `bib --check` to see which notes.", fg=typer.colors.YELLOW)
+        raise typer.Exit(1) from exc
+
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(bibtex.render(entries), encoding="utf-8")
+    out.write_text(rendered, encoding="utf-8")
     typer.secho(f"Wrote {len(entries)} entries to {out}", fg=typer.colors.GREEN)
 
 
@@ -240,10 +328,23 @@ HARVESTED_TAG = "harvested"
 SEED_TAG = "seed"
 
 
-def _tags_for(subfields: Sequence[str], *, harvested: bool) -> list[str]:
-    """``paper`` plus provenance plus one nested tag per OpenAlex subfield."""
+def _tags_for(
+    subfields: Sequence[str], *, harvested: bool, existing: Sequence[str] = ()
+) -> list[str]:
+    """``paper`` plus provenance plus one nested tag per OpenAlex subfield.
+
+    Tags this function does not own are carried through. ``read`` is derived
+    from the body, so an unrelated command rewriting the list must not retract
+    it until the next ``tidy`` puts it back.
+    """
     tags = ["paper", HARVESTED_TAG if harvested else SEED_TAG]
     tags.extend(f"topic/{slug}" for slug in subfields)
+    owned = {"paper", HARVESTED_TAG, SEED_TAG}
+    tags.extend(
+        tag
+        for tag in existing
+        if tag not in owned and not tag.startswith("topic/") and tag not in tags
+    )
     return tags
 
 
@@ -301,6 +402,156 @@ def _work_doi(work: dict[str, Any]) -> str | None:
     return doi.strip().removeprefix("https://doi.org/").lower()
 
 
+def _decision_for(
+    candidate: graph.Candidate,
+    works: dict[str, dict[str, Any]],
+    stamped: str,
+    decision: str,
+    reason: str,
+    record: Paper | None = None,
+) -> screening.Decision:
+    """One ledger row for one candidate, labelled from whatever metadata is here."""
+    work = works.get(candidate.openalex_id, {})
+    year = work.get("publication_year")
+    return screening.Decision(
+        decided=stamped,
+        decision=decision,
+        openalex_id=candidate.openalex_id,
+        # The fetched work is the only place a backward candidate's DOI appears.
+        doi=candidate.doi or _work_doi(work),
+        year=year if isinstance(year, int) else None,
+        via=tuple(sorted(candidate.provenance)),
+        seeds=tuple(sorted(candidate.seeds)),
+        reason=reason,
+        title=record.title if record else str(work.get("title") or ""),
+    )
+
+
+def _adopt_ledger(papers_dir: Path, ledger: screening.Ledger) -> int:
+    """Seed the ledger from a vault that predates it. Every note is an inclusion."""
+    if ledger.rows:
+        typer.secho(
+            f"{ledger.path} already has {len(ledger.rows)} row(s); "
+            "adopting again would double-count.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        return 1
+
+    rows: list[screening.Decision] = []
+    for path in sorted(papers_dir.glob("*.md")):
+        front = vault.read_frontmatter(path)
+        openalex_id = front.get("openalex_id")
+        doi = front.get("doi")
+        if not openalex_id and not doi:
+            continue
+        year = front.get("year")
+        rows.append(
+            screening.Decision(
+                # The file's own mtime: when the decision was actually made.
+                decided=dt.datetime.fromtimestamp(path.stat().st_mtime, dt.UTC)
+                .replace(microsecond=0)
+                .isoformat(),
+                decision=screening.INCLUDE,
+                openalex_id=str(openalex_id) if openalex_id else None,
+                doi=str(doi).lower() if doi else None,
+                year=year if isinstance(year, int) else None,
+                # The history of these decisions is unrecoverable, and saying
+                # "adopted" is more honest than inventing one.
+                reason="adopted",
+                title=str(front.get("title") or ""),
+            )
+        )
+    screening.append(papers_dir, rows)
+    typer.secho(
+        f"Adopted {len(rows)} note(s) into {screening.ledger_path(papers_dir)}.",
+        fg=typer.colors.GREEN,
+    )
+    return 0
+
+
+def _record_decisions(
+    papers_dir: Path, include: Sequence[str], exclude: Sequence[str], reason: str
+) -> int:
+    """Record decisions for ids named on the command line."""
+    wanted = [
+        (sources.as_openalex_id(raw) or None, raw) for raw in [*include, *exclude]
+    ]
+    stamped = screening.now()
+    rows = [
+        screening.Decision(
+            decided=stamped,
+            decision=screening.INCLUDE if raw in set(include) else screening.EXCLUDE,
+            openalex_id=ident,
+            doi=None if ident else sources.normalize_doi(raw),
+            reason=reason,
+        )
+        for ident, raw in wanted
+    ]
+    screening.append(papers_dir, rows)
+    typer.secho(f"Recorded {len(rows)} decision(s).", fg=typer.colors.GREEN)
+    return 0
+
+
+def _report_screening(papers_dir: Path, ledger: screening.Ledger) -> int:
+    """The four PRISMA numbers, and where the vault and the ledger disagree."""
+    by_doi, by_openalex = vault.index(papers_dir)
+    included = len(list(papers_dir.glob("*.md")))
+
+    def has_note(row: screening.Decision) -> bool:
+        return bool(
+            (row.openalex_id and row.openalex_id in by_openalex)
+            or (row.doi and row.doi in by_doi)
+        )
+
+    standing = [
+        row
+        for row in ledger.rows
+        if ledger.lookup(openalex_id=row.openalex_id, doi=row.doi) is row
+    ]
+    excluded = [r for r in standing if r.decision == screening.EXCLUDE]
+    pending = [r for r in standing if r.decision == screening.PENDING]
+    screened = len(excluded) + len(
+        [r for r in standing if r.decision == screening.INCLUDE]
+    )
+
+    unrecorded = included - len([r for r in standing if has_note(r)])
+    contradicted = [r for r in excluded if has_note(r)]
+    vanished = [
+        r for r in standing if r.decision == screening.INCLUDE and not has_note(r)
+    ]
+
+    typer.secho(
+        f"Identified {len(standing) + max(unrecorded, 0):>5}   "
+        "distinct works ever seen\n"
+        f"Screened   {screened:>5}   carrying a standing decision\n"
+        f"Excluded   {len(excluded):>5}\n"
+        f"Included   {included:>5}   notes in the vault\n"
+        f"Pending    {len(pending):>5}   awaiting a decision",
+        fg=typer.colors.CYAN,
+    )
+    typer.echo("")
+    typer.echo(f"  in the vault, not in the ledger   {max(unrecorded, 0):>4}")
+    typer.echo(f"  excluded, but a note exists       {len(contradicted):>4}")
+    typer.echo(f"  included, but no note exists      {len(vanished):>4}")
+    typer.echo(f"  rows the parser could not read    {ledger.unreadable:>4}")
+
+    if unrecorded > 0 and not ledger.rows:
+        typer.secho(
+            "\nThe ledger is empty. Seed it with `expand --adopt`.",
+            fg=typer.colors.YELLOW,
+        )
+    for row in vanished[:5]:
+        # Deleting the note *was* the decision; the ledger's job is only not to
+        # undo it. The row is now wrong, but only you know why it went.
+        ident = row.openalex_id or row.doi or ""
+        typer.secho(
+            f'\n  expand --exclude {ident} --reason "deleted by hand"',
+            fg=typer.colors.YELLOW,
+        )
+    return 0
+
+
 @app.command()
 def expand(
     backward: Annotated[
@@ -324,6 +575,27 @@ def expand(
     dry_run: Annotated[
         bool, typer.Option("--dry-run", help="List candidates, write nothing")
     ] = False,
+    screen: Annotated[
+        bool,
+        typer.Option("--screen", help="Record candidates as pending, write no notes"),
+    ] = False,
+    include: Annotated[
+        list[str] | None,
+        typer.Option("--include", help="Record a decision to include these ids"),
+    ] = None,
+    exclude: Annotated[
+        list[str] | None,
+        typer.Option("--exclude", help="Record a decision to exclude these ids"),
+    ] = None,
+    reason: Annotated[
+        str | None, typer.Option("--reason", help="Why; required with --exclude")
+    ] = None,
+    report: Annotated[
+        bool, typer.Option("--report", help="Reconcile the vault against the ledger")
+    ] = False,
+    adopt: Annotated[
+        bool, typer.Option("--adopt", help="Seed the ledger from the existing vault")
+    ] = False,
 ) -> None:
     """Add the papers around the vault: what it cites, cites it, and near it.
 
@@ -335,6 +607,38 @@ def expand(
     if not papers_dir.is_dir():
         typer.secho(f"{papers_dir} does not exist.", fg=typer.colors.RED, err=True)
         raise typer.Exit(1)
+
+    terminal = [dry_run, screen, report, adopt, bool(include or exclude)]
+    if sum(terminal) > 1:
+        typer.secho(
+            "Give one of --dry-run, --screen, --report, --adopt, "
+            "or --include/--exclude.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+    if exclude and not reason:
+        typer.secho(
+            "--exclude needs --reason: a decision with no reason is not a record.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    try:
+        ledger = screening.load(papers_dir)
+    except screening.ScreeningError as exc:
+        typer.secho(str(exc), fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+
+    if adopt:
+        raise typer.Exit(_adopt_ledger(papers_dir, ledger))
+    if report:
+        raise typer.Exit(_report_screening(papers_dir, ledger))
+    if include or exclude:
+        raise typer.Exit(
+            _record_decisions(papers_dir, include or [], exclude or [], reason or "")
+        )
 
     roots = _root_notes(papers_dir)
     if not roots:
@@ -355,14 +659,21 @@ def expand(
             related=related,
         )
         by_doi, by_openalex = vault.index(papers_dir)
-        fresh = {
-            ident: candidate
-            for ident, candidate in candidates.items()
-            if ident not in by_openalex
-            and not (candidate.doi and candidate.doi in by_doi)
-        }
+        fresh: dict[str, graph.Candidate] = {}
+        screened = 0
+        for ident, candidate in candidates.items():
+            # The note check runs first: a note that exists always beats the
+            # ledger, because adding it *was* the change of mind. `--report`
+            # surfaces the disagreement rather than the code resolving it.
+            if ident in by_openalex or (candidate.doi and candidate.doi in by_doi):
+                continue
+            if ledger.decided(openalex_id=ident, doi=candidate.doi):
+                screened += 1
+                continue
+            fresh[ident] = candidate
         typer.echo(
-            f"{len(candidates)} candidate(s), {len(fresh)} not yet in the vault."
+            f"{len(candidates)} candidate(s), {len(fresh)} new, "
+            f"{screened} already screened."
         )
         if not fresh:
             raise typer.Exit(0)
@@ -371,23 +682,68 @@ def expand(
             graph.bare_id(str(work.get("id", ""))): work
             for work in graph.fetch_works(sorted(fresh), client=client)
         }
-        selected = _select(fresh, works, by_doi, min_year=min_year, limit=limit)
+        kept = _select(fresh, works, by_doi, ledger, min_year=min_year)
+        selected = kept[:limit] if limit is not None else kept
+        deferred = len(kept) - len(selected)
 
-        if dry_run:
+        if dry_run or screen:
             _print_candidates(selected, works)
+            if deferred:
+                typer.secho(
+                    f"  … {deferred} more deferred by --limit",
+                    fg=typer.colors.BRIGHT_BLACK,
+                )
+        if dry_run:
             typer.secho(
                 f"\nDry run: {len(selected)} note(s) would be written.",
                 fg=typer.colors.YELLOW,
+            )
+            raise typer.Exit(0)
+        if screen:
+            stamped = screening.now()
+            written_rows = screening.append(
+                papers_dir,
+                [
+                    _decision_for(c, works, stamped, screening.PENDING, "")
+                    for c in selected
+                ],
+            )
+            typer.secho(
+                f"\nRecorded {written_rows} candidate(s) as pending. "
+                f"Decide with `expand --include` / `--exclude`.",
+                fg=typer.colors.GREEN,
             )
             raise typer.Exit(0)
 
         written, no_pdf = _write_notes(
             selected, works, papers_dir=papers_dir, client=client, pdfs=pdfs
         )
+        stamped = screening.now()
+        screening.append(
+            papers_dir,
+            [
+                _decision_for(
+                    entry.candidate, works, stamped, screening.INCLUDE, "", entry.record
+                )
+                for entry in written
+            ],
+        )
 
     for path, front in roots:
         subfields = _subfields_of(front)
-        vault.update_frontmatter(path, {"tags": _tags_for(subfields, harvested=False)})
+        held = front.get("tags")
+        vault.update_frontmatter(
+            path,
+            {
+                "tags": _tags_for(
+                    subfields,
+                    harvested=False,
+                    existing=[str(tag) for tag in held]
+                    if isinstance(held, list)
+                    else (),
+                )
+            },
+        )
 
     typer.secho(
         f"\nWrote {len(written)} note(s) to {papers_dir}", fg=typer.colors.GREEN
@@ -414,11 +770,16 @@ def _select(
     fresh: dict[str, graph.Candidate],
     works: dict[str, dict[str, Any]],
     by_doi: dict[str, Path],
+    ledger: screening.Ledger | None = None,
     *,
     min_year: int | None,
-    limit: int | None,
 ) -> list[graph.Candidate]:
-    """Apply the year filter, drop works already present under a DOI, then cap."""
+    """Apply the year filter and drop works already present or already screened.
+
+    Does *not* cap: `--limit` defers rather than decides, so the caller slices
+    the result and can report what it deferred without writing a ledger row for
+    a paper nobody judged.
+    """
     kept: list[graph.Candidate] = []
     for ident, candidate in fresh.items():
         work = works.get(ident)
@@ -427,6 +788,11 @@ def _select(
         doi = _work_doi(work)
         if doi and doi in by_doi:
             continue  # the candidate carried no DOI but the fetched work does
+        # Same second chance for the ledger. A backward or related candidate
+        # always arrives with `doi=None`, so this is the only place its DOI is
+        # ever known, and an exclusion recorded against the DOI must still bite.
+        if ledger is not None and ledger.decided(openalex_id=ident, doi=doi):
+            continue
         year = work.get("publication_year")
         if min_year is not None and (not isinstance(year, int) or year < min_year):
             continue
@@ -437,7 +803,7 @@ def _select(
             works[c.openalex_id].get("title") or "",
         )
     )
-    return kept[:limit] if limit is not None else kept
+    return kept
 
 
 def _print_candidates(
@@ -451,6 +817,16 @@ def _print_candidates(
         typer.echo(f"  {year}  [{routes}]  {title[:88]}")
 
 
+@dataclass(frozen=True, slots=True)
+class Written:
+    """A note `expand` just created, and what it took to create it."""
+
+    path: Path
+    key: str
+    candidate: graph.Candidate
+    record: Paper
+
+
 def _write_notes(
     selected: Sequence[graph.Candidate],
     works: dict[str, dict[str, Any]],
@@ -458,11 +834,13 @@ def _write_notes(
     papers_dir: Path,
     client: httpx.Client,
     pdfs: bool,
-) -> tuple[list[Path], list[str]]:
+) -> tuple[list[Written], list[str]]:
     """Resolve each candidate against Crossref and write its note."""
-    written: list[Path] = []
+    written: list[Written] = []
     no_pdf: list[str] = []
-    seen_keys: set[str] = set()
+    # Seeded from the vault, not empty: an unseeded set only stops two notes in
+    # one run colliding, and says nothing about the two hundred already there.
+    seen_keys: set[str] = set(vault.cite_keys(papers_dir))
 
     for position, candidate in enumerate(selected, start=1):
         work = works[candidate.openalex_id]
@@ -477,9 +855,7 @@ def _write_notes(
             # Crossref does not know it, or has no DOI to know it by.
             record = sources.paper_from_openalex(work)
 
-        key = record.cite_key()
-        while key in seen_keys:
-            key = f"{key}a"  # two papers, same author, year and first word
+        key = _unclaimed_key(record.cite_key(), seen_keys)
         seen_keys.add(key)
 
         topics, subfields = graph.topics_of(work)
@@ -503,7 +879,7 @@ def _write_notes(
         except vault.VaultError as exc:
             typer.secho(f"  [{position}] skipped: {exc}", fg=typer.colors.YELLOW)
             continue
-        written.append(path)
+        written.append(Written(path=path, key=key, candidate=candidate, record=record))
         typer.echo(f"  [{position}/{len(selected)}] {path.name}")
     return written, no_pdf
 
@@ -567,7 +943,22 @@ def relink() -> None:
         # Links, not strings: a plain label is not a node, so however well it
         # groups a table it never reaches the graph.
         linked = [vault.topic_link(topic) for topic in kept]
-        if vault.update_frontmatter(path, {"topics": linked, "cites": cites}):
+        updates: dict[str, Any] = {"topics": linked, "cites": cites}
+        # `WORK_FIELDS` already asks for these, and the response is already
+        # here, so a note's citation count stopped being a snapshot from
+        # whenever it was imported for the cost of reading three more keys.
+        count = work.get("cited_by_count")
+        if isinstance(count, int):
+            updates["citations"] = count
+        oa = work.get("open_access")
+        if isinstance(oa, dict) and isinstance(oa.get("oa_status"), str):
+            updates["open_access"] = str(oa["oa_status"]).lower()
+        best = work.get("best_oa_location")
+        if isinstance(best, dict) and isinstance(best.get("pdf_url"), str):
+            # Only when OpenAlex has one: a gap upstream must not blank a URL
+            # somebody recorded by hand.
+            updates["pdf_url"] = str(best["pdf_url"])
+        if vault.update_frontmatter(path, updates):
             changed += 1
 
     topics_dir = papers_dir.parent / vault.TOPICS_DIRNAME
@@ -582,7 +973,9 @@ def relink() -> None:
     )
 
 
-def _backfill_openalex_ids(papers_dir: Path) -> int:
+def _backfill_openalex_ids(
+    papers_dir: Path, *, client: httpx.Client | None = None
+) -> int:
     """Give every note with a DOI its OpenAlex id, so the linker can see it.
 
     ``paper`` records only what Crossref returns, so a note added by hand
@@ -590,8 +983,10 @@ def _backfill_openalex_ids(papers_dir: Path) -> int:
     graph. Doing this here rather than in ``paper`` keeps the single-paper path
     free of a second lookup, and repairs notes added before this existed.
     """
+    # Lowercased to match `_work_doi`, which lowercases what OpenAlex returns.
+    # A note recording its DOI in caps would otherwise never find its work.
     needing = {
-        str(front["doi"]): path
+        str(front["doi"]).lower(): path
         for path in sorted(papers_dir.glob("*.md"))
         if (front := vault.read_frontmatter(path)).get("doi")
         and not front.get("openalex_id")
@@ -599,8 +994,11 @@ def _backfill_openalex_ids(papers_dir: Path) -> int:
     if not needing:
         return 0
 
-    with httpx.Client(follow_redirects=True) as client:
+    if client is not None:
         works = graph.fetch_by_doi(sorted(needing), client=client)
+    else:
+        with httpx.Client(follow_redirects=True) as owned:
+            works = graph.fetch_by_doi(sorted(needing), client=owned)
 
     repaired = 0
     for work in works:
@@ -615,11 +1013,71 @@ def _backfill_openalex_ids(papers_dir: Path) -> int:
     return repaired
 
 
+_BIBFIELDS = ("volume", "number", "pages", "publisher", "editors", "month")
+
+
+def _backfill_bibfields(papers_dir: Path, *, client: httpx.Client | None = None) -> int:
+    """Fill the fields a bibliography renders, from Crossref, for notes missing them.
+
+    One request per note, unlike the abstract backfill which rides a batched
+    OpenAlex call, which is why this is opt-in. Only unset fields are written,
+    so an interrupted run is simply re-run.
+    """
+    needing = [
+        (path, str(front["doi"]))
+        for path in sorted(papers_dir.glob("*.md"))
+        if (front := vault.read_frontmatter(path)).get("doi")
+        and not all(front.get(field) for field in _BIBFIELDS)
+    ]
+    if not needing:
+        return 0
+
+    owned = client is None
+    active = client or httpx.Client(follow_redirects=True)
+    filled = 0
+    try:
+        with typer.progressbar(needing, label="Crossref") as progress:
+            for path, doi in progress:
+                try:
+                    message = sources.fetch_crossref(
+                        sources.normalize_doi(doi), client=active
+                    )
+                except sources.SourceLookupError, httpx.HTTPError:
+                    continue
+                record = sources.build_paper(message)
+                front = vault.read_frontmatter(path)
+                updates = {
+                    field: value
+                    for field in _BIBFIELDS
+                    if not front.get(field)
+                    and (
+                        value := (
+                            list(record.editors)
+                            if field == "editors"
+                            else getattr(record, field)
+                        )
+                    )
+                }
+                if updates and vault.update_frontmatter(path, updates):
+                    filled += 1
+    finally:
+        if owned:
+            active.close()
+    return filled
+
+
 @app.command()
 def tidy(
     abstracts: Annotated[
         bool, typer.Option("--abstracts/--no-abstracts", help="Backfill from OpenAlex")
     ] = True,
+    bibfields: Annotated[
+        bool,
+        typer.Option(
+            "--bibfields",
+            help="Backfill volume, issue, pages, publisher and editors from Crossref",
+        ),
+    ] = False,
 ) -> None:
     """Reformat note bodies to the template, and fill any abstract still missing.
 
@@ -663,8 +1121,13 @@ def tidy(
         else {}
     )
 
-    reformatted = adopted = unescaped = retagged = 0
+    enriched = _backfill_bibfields(papers_dir) if bibfields else 0
+
+    reformatted = adopted = unescaped = retagged = reordered = 0
     for path in sorted(papers_dir.glob("*.md")):
+        # Before the body work, so the note read below is already canonical.
+        if vault.reorder_frontmatter(path):
+            reordered += 1
         front, body = vault._split_frontmatter(path.read_text(encoding="utf-8"))
         sections = vault.parse_body(body)
         if path in filled:
@@ -698,9 +1161,15 @@ def tidy(
     typer.secho(
         f"Reformatted {reformatted} note(s); filled {len(filled)} abstract(s); "
         f"adopted {adopted} PDF(s); unescaped {unescaped} note(s); "
-        f"re-tagged {retagged} note(s) read/unread.",
+        f"re-tagged {retagged} note(s) read/unread; "
+        f"reordered {reordered} frontmatter block(s).",
         fg=typer.colors.GREEN,
     )
+    if bibfields:
+        typer.secho(
+            f"Filled bibliographic fields on {enriched} note(s).",
+            fg=typer.colors.GREEN,
+        )
     orphans = sorted(
         set(on_disk)
         - {
@@ -745,8 +1214,11 @@ def _venue(record: search.Record, width: int = 46) -> str:
 def _headline(record: search.Record) -> str:
     year = record.year if record.year is not None else "n.d."
     mark = "[pdf]" if record.has_pdf else "[no pdf]"
+    # Loud, and before the metadata: citing one of these is the error the whole
+    # `health` command exists to prevent.
+    flag = f"[{record.retracted.upper()}] " if record.retracted else ""
     return (
-        f"{record.title} — {record.byline} · {_venue(record)} {year} · "
+        f"{flag}{record.title} — {record.byline} · {_venue(record)} {year} · "
         f"{_citations(record)} · {mark}"
     )
 
@@ -802,6 +1274,19 @@ def find(
             "--has-pdf/--no-pdf", help="Only papers whose PDF is (not) on disk"
         ),
     ] = None,
+    retracted: Annotated[
+        bool | None,
+        typer.Option(
+            "--retracted/--not-retracted", help="Only papers that are (not) retracted"
+        ),
+    ] = None,
+    author: Annotated[
+        str | None, typer.Option("--author", help="Substring of an author's name")
+    ] = None,
+    expand_terms: Annotated[
+        bool,
+        typer.Option("--expand", help="Also match corpus terms sharing a long prefix"),
+    ] = False,
     limit: Annotated[int, typer.Option("--limit", help="How many hits to print")] = 10,
     full: Annotated[
         bool, typer.Option("--full", help="Print whole notes, not snippets")
@@ -829,11 +1314,15 @@ def find(
         max_year=max_year,
         min_citations=min_citations,
         has_pdf=has_pdf,
+        retracted=retracted,
+        author=author,
     )
 
     text = " ".join(query or [])
     hits = (
-        search.rank(filtered, text) if text.strip() else search.by_citations(filtered)
+        search.rank(filtered, text, expand=expand_terms)
+        if text.strip()
+        else search.by_citations(filtered)
     )
 
     if as_json:
@@ -938,6 +1427,196 @@ def show(
         typer.echo("")
 
 
+# \cite, \parencite, \autocite, \textcite, \footcite, \supercite, starred or
+# not, with any number of optional [prenote][postnote] arguments before the key
+# list. The keys themselves are one capture, split on commas by the caller.
+_CITE = re.compile(
+    r"\\(?:no|foot|super|auto|paren|text|smart|full)?cite[a-zA-Z]*\*?"
+    r"(?:\[[^\]]*\])*\{([^}]*)\}"
+)
+# A .bib entry key, for --bib.
+_BIB_ENTRY = re.compile(r"^\s*@[a-zA-Z]+\s*\{\s*([^,\s]+)\s*,", re.MULTILINE)
+
+
+def cited_keys(text: str, *, bib: bool = False) -> set[str]:
+    """Every cite key a LaTeX document cites, or a ``.bib`` file defines."""
+    if bib:
+        return {match.group(1).strip() for match in _BIB_ENTRY.finditer(text)}
+    return {
+        key.strip()
+        for match in _CITE.finditer(text)
+        for key in match.group(1).split(",")
+        if key.strip()
+    }
+
+
+@app.command(name="cite-check")
+def cite_check(
+    files: Annotated[
+        list[Path], typer.Argument(help="LaTeX documents (or .bib files with --bib)")
+    ],
+    bib: Annotated[
+        bool, typer.Option("--bib", help="Read .bib entry keys instead of \\cite")
+    ] = False,
+    unused: Annotated[
+        bool, typer.Option("--unused/--no-unused", help="Also list notes cited nowhere")
+    ] = True,
+) -> None:
+    """Reconcile the cite keys in a document against the notes in the vault.
+
+    The one command that connects the vault to what is being written. A key
+    cited with no note behind it is the real error, and the exit code says so; a
+    note cited nowhere is only the gap between a reading list and an argument.
+    """
+    records = _load(_papers_dir())
+    known = {record.cite_key: record for record in records}
+
+    wanted: set[str] = set()
+    for path in files:
+        try:
+            wanted |= cited_keys(path.read_text(encoding="utf-8"), bib=bib)
+        except OSError as exc:
+            typer.secho(f"{path}: {exc.strerror}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+
+    missing = sorted(wanted - set(known))
+    typer.secho(
+        f"{len(wanted)} cite key(s) in {len(files)} file(s) · "
+        f"{len(records)} notes · {len(missing)} with no note",
+        fg=typer.colors.CYAN,
+    )
+    for key in missing:
+        typer.secho(f"  {key}", fg=typer.colors.RED)
+
+    if unused:
+        # Not an error: a vault is meant to be larger than any one paper.
+        uncited = sorted(set(known) - wanted)
+        typer.secho(
+            f"\n{len(uncited)} note(s) cited nowhere", fg=typer.colors.BRIGHT_BLACK
+        )
+        for key in uncited[:10]:
+            typer.secho(f"  {key}", fg=typer.colors.BRIGHT_BLACK)
+        if len(uncited) > 10:
+            typer.secho(
+                f"  … and {len(uncited) - 10} more", fg=typer.colors.BRIGHT_BLACK
+            )
+
+    if missing:
+        raise typer.Exit(1)
+
+
+@app.command(name="health")
+def health_check(
+    retractions: Annotated[
+        bool, typer.Option("--retractions/--no-retractions", help="Check for notices")
+    ] = True,
+    drift: Annotated[
+        bool,
+        typer.Option(
+            "--drift/--no-drift",
+            help="Compare title, venue, year and type with Crossref (opt-in)",
+        ),
+    ] = False,
+    duplicates: Annotated[
+        bool, typer.Option("--duplicates/--no-duplicates", help="Find preprint pairs")
+    ] = True,
+    fix: Annotated[
+        bool, typer.Option("--fix", help="Write the `retracted` key. Nothing else.")
+    ] = False,
+) -> None:
+    """Check the corpus against Crossref: retractions, drift and duplicate pairs.
+
+    Read-only unless ``--fix``, and exits non-zero when anything is found, so it
+    works as a pre-commit or CI check. About five requests for a 180-note vault.
+
+    ``--drift`` is opt-in because it is a prompt for review rather than a defect
+    list: a short venue you chose on purpose reads as drift against Crossref's
+    full proceedings title, and Crossref truncates some titles that the note
+    records in full. Leaving it on by default would make this command exit
+    non-zero forever and stop being a usable gate.
+
+    ``--fix`` writes exactly one thing, the ``retracted`` key, because that has
+    an unambiguous upstream answer. Drift is a judgement and resolving a
+    duplicate is a deletion; both are reported and left to you.
+    """
+    papers_dir = _papers_dir()
+    records = _load(papers_dir)
+    with httpx.Client(follow_redirects=True) as client:
+        try:
+            report = health.check(
+                records,
+                client=client,
+                retractions=retractions,
+                drift=drift,
+                duplicates=duplicates,
+            )
+        except httpx.HTTPError as exc:
+            typer.secho(f"Crossref: {exc}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+
+    typer.secho(
+        f"{len(records)} notes · {report.checked} checked against Crossref · "
+        f"{len(report.unchecked)} with no DOI to check",
+        fg=typer.colors.CYAN,
+    )
+
+    if report.retracted:
+        typer.secho(f"\nRetracted ({len(report.retracted)})", fg=typer.colors.RED)
+        for record, kind in report.retracted:
+            typer.secho(f"  {record.cite_key}  {kind}", fg=typer.colors.RED)
+            typer.echo(f"    {record.title}")
+    if report.corrections:
+        typer.secho(
+            f"\nCorrected or amended ({len(report.corrections)})",
+            fg=typer.colors.YELLOW,
+        )
+        for record, notice in report.corrections:
+            typer.echo(f"  {record.cite_key}  {notice.kind}  {notice.doi}")
+    if report.drift:
+        typer.secho(f"\nMetadata drift ({len(report.drift)})", fg=typer.colors.YELLOW)
+        for entry in report.drift:
+            typer.echo(f"  {entry.cite_key}  {entry.field}")
+            typer.secho(f"    note:     {entry.in_note}", fg=typer.colors.BRIGHT_BLACK)
+            typer.secho(f"    crossref: {entry.upstream}", fg=typer.colors.CYAN)
+    if report.duplicates:
+        typer.secho(
+            f"\nProbable preprint/version-of-record pairs ({len(report.duplicates)})",
+            fg=typer.colors.YELLOW,
+        )
+        for pair in report.duplicates:
+            typer.echo(
+                f"  {pair.preprint.cite_key} → {pair.version_of_record.cite_key}"
+            )
+            typer.secho(f"    {pair.evidence}", fg=typer.colors.BRIGHT_BLACK)
+            # Not a merge: the preprint's note may hold your highlights and the
+            # published one may not, and no rule can choose which prose survives.
+            typer.secho(f'    rm "{pair.preprint.path}"', fg=typer.colors.BRIGHT_BLACK)
+            ident = pair.preprint.doi or pair.preprint.openalex_id or ""
+            typer.secho(
+                f"    research-assistant expand --exclude {ident} "
+                f'--reason "preprint of {pair.version_of_record.cite_key}"',
+                fg=typer.colors.BRIGHT_BLACK,
+            )
+
+    if fix:
+        written = 0
+        wanted = {record.cite_key: kind for record, kind in report.retracted}
+        for record in records:
+            # Cleared again when a notice is withdrawn, which is what makes the
+            # key derived rather than a claim somebody has to keep true.
+            found: str | None = wanted.get(record.cite_key)
+            if record.retracted != found and vault.update_frontmatter(
+                record.path, {"retracted": found}
+            ):
+                written += 1
+        typer.secho(f"\nSet `retracted` on {written} note(s).", fg=typer.colors.GREEN)
+
+    if report.clean:
+        typer.secho("\nNothing to report.", fg=typer.colors.GREEN)
+        return
+    raise typer.Exit(1)
+
+
 @app.command()
 def near(
     target: Annotated[str, typer.Argument(help="Cite key, note name or DOI")],
@@ -967,7 +1646,9 @@ def near(
         typer.secho("    none", fg=typer.colors.BRIGHT_BLACK)
 
     # How much of this paper's bibliography `expand` has not pulled in yet.
-    total = len(record.cites) + len(unresolved)
+    # `record.cites` already holds the unresolved names, so adding them again
+    # would count every gap twice and understate the coverage.
+    total = len(record.cites)
     typer.echo(f"\n  cites, not in the vault: {len(unresolved)} of {total} unresolved")
 
 

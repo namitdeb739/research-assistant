@@ -6,7 +6,7 @@ A paper note is a couple of kilobytes and a vault is hundreds of them. Reading
 three and generalising is a plausible-sounding answer built on whichever notes
 happened to get opened, and a `rg` over the folder returns unranked substring
 hits with no idea which one matters. `research-assistant find` ranks by BM25
-over title, topics, takeaway and abstract; `show` resolves one note by cite key,
+over title, topics, abstract and notes; `show` resolves one note by cite key,
 name or DOI.
 
 Warn-only: always exits 0. Both tools still run, because the exceptions are
@@ -47,7 +47,7 @@ SHELL_READERS = re.compile(
 
 SEARCH_NUDGE = (
     'Prefer `research-assistant find "<terms>"` over searching the papers folder.\n'
-    "   It ranks by BM25 over title, topics, takeaway and abstract, prints the\n"
+    "   It ranks by BM25 over title, topics, abstract and notes, prints the\n"
     "   cite key and a marked snippet, and takes --topic/--tag/--has-pdf.\n"
     "   A grep here returns unranked substring hits across the whole corpus."
 )
@@ -74,7 +74,7 @@ def watched_roots(papers: Path) -> list[Path]:
 def inside(target: str, roots: list[Path]) -> bool:
     try:
         path = Path(target).expanduser().resolve()
-    except OSError, ValueError, RuntimeError:
+    except (OSError, ValueError, RuntimeError):
         return False
     return any(path == root or root in path.parents for root in roots)
 
@@ -88,7 +88,7 @@ def load_warned(state_path: Path) -> set[str]:
     if state_path.exists():
         try:
             return set(json.loads(state_path.read_text()))
-        except json.JSONDecodeError, OSError:
+        except (json.JSONDecodeError, OSError):
             pass
     return set()
 
@@ -106,7 +106,7 @@ def main() -> int:
 
     try:
         payload = json.load(sys.stdin)
-    except json.JSONDecodeError, OSError:
+    except (json.JSONDecodeError, OSError):
         return 0
 
     tool = payload.get("tool_name", "")

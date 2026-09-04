@@ -1,7 +1,9 @@
 """Obsidian vault backend for the “Research Resources” database.
 
-One Markdown note per resource, named ``<cite_key>.md``, with the bibliographic
-record in YAML frontmatter. The filename is the uniqueness guard.
+One Markdown note per resource, named for its title so the folder reads in
+Obsidian, with the bibliographic record in YAML frontmatter. The cite key is a
+property, not the filename: :func:`cite_keys` is what guards its uniqueness,
+because the filename cannot.
 
 The frontmatter holds only *intrinsic* properties, facts about the resource
 itself. Judgements about it (is it any good, does it belong in related work) and
@@ -25,7 +27,7 @@ leaves the body byte-for-byte identical.
 from __future__ import annotations
 
 import re
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 import yaml
 
@@ -65,6 +67,42 @@ _PDF_MAGIC = b"%PDF-"
 # The note body is a fixed set of sections in a fixed order. ``PDF`` is the only
 # one dropped when empty; the other two are prompts, and a missing heading is a
 # worse invitation to write than an empty one.
+# The order every note's frontmatter is written in, and the order `tidy`
+# restores. `update_frontmatter` appends a key it has not seen before, so
+# without this a key added in a later release would sit after `tags` on every
+# note that predates it and in its proper place on every note that does not.
+FRONTMATTER_KEYS: Final[tuple[str, ...]] = (
+    "title",
+    "cite_key",
+    "entry_type",
+    "authors",
+    "year",
+    "venue",
+    "volume",
+    "number",
+    "pages",
+    "publisher",
+    "editors",
+    "month",
+    "doi",
+    "openalex_id",
+    "url",
+    "pdf",
+    "pdf_url",
+    "code_url",
+    "citations",
+    "open_access",
+    "retracted",
+    "topics",
+    "cites",
+    "tags",
+)
+
+# List-valued keys are absent as ``[]``, not ``null``: a table view counts them.
+_LIST_KEYS: Final[frozenset[str]] = frozenset(
+    {"authors", "editors", "topics", "cites", "tags"}
+)
+
 BODY_SECTIONS = ("Abstract", "Notes")
 PDF_SECTION = "PDF"
 
@@ -104,6 +142,13 @@ def _split_frontmatter(text: str) -> tuple[dict[str, Any], str]:
 
 def _int(value: Any) -> int | None:
     return int(value) if isinstance(value, int | float) else None
+
+
+def _names(value: Any) -> tuple[str, ...]:
+    """A frontmatter list of people, dropping blanks and anything not a list."""
+    if not isinstance(value, list):
+        return ()
+    return tuple(str(name).strip() for name in value if str(name).strip())
 
 
 def _str(value: Any) -> str | None:
@@ -152,6 +197,12 @@ def note_text(
         "authors": list(paper.authors),
         "year": paper.year,
         "venue": paper.venue,
+        "volume": paper.volume,
+        "number": paper.number,
+        "pages": paper.pages,
+        "publisher": paper.publisher,
+        "editors": list(paper.editors),
+        "month": paper.month,
         "doi": paper.doi,
         "openalex_id": openalex_id,
         "url": paper.url,
@@ -160,6 +211,7 @@ def note_text(
         "code_url": None,
         "citations": paper.citations,
         "open_access": paper.open_access.lower() if paper.open_access else None,
+        "retracted": paper.retracted,
         "topics": list(topics),
         "cites": [],
         "tags": list(tags),
@@ -379,6 +431,24 @@ def index(papers_dir: Path) -> tuple[dict[str, Path], dict[str, Path]]:
     return by_doi, by_openalex
 
 
+def cite_keys(papers_dir: Path) -> dict[str, list[Path]]:
+    """Every cite key the vault claims, and the notes claiming it.
+
+    A key with two notes under it is a miscitation waiting to happen: BibTeX
+    keeps one of the entries and silently drops the other. Separate from
+    :func:`index` because the filename is the only uniqueness guard
+    :func:`create_paper` applies, and it is derived from the title, not the key.
+    """
+    claimed: dict[str, list[Path]] = {}
+    if not papers_dir.is_dir():
+        return claimed
+    for path in sorted(papers_dir.glob("*.md")):
+        key = _str(read_frontmatter(path).get("cite_key"))
+        if key:
+            claimed.setdefault(key, []).append(path)
+    return claimed
+
+
 def update_frontmatter(path: Path, updates: dict[str, Any]) -> bool:
     """Rewrite only the named frontmatter keys. Returns whether anything changed.
 
@@ -400,6 +470,32 @@ def update_frontmatter(path: Path, updates: dict[str, Any]) -> bool:
     return True
 
 
+def reorder_frontmatter(path: Path) -> bool:
+    """Put the frontmatter back in :data:`FRONTMATTER_KEYS` order, filling gaps.
+
+    A key added in a later release lands after ``tags`` on every note written
+    before it, because :func:`update_frontmatter` appends what it has not seen.
+    Values are untouched and unknown keys are kept, after the known ones, so a
+    property somebody added by hand survives.
+    """
+    text = path.read_text(encoding="utf-8")
+    front, body = _split_frontmatter(text)
+    if not front:
+        return False
+
+    ordered: dict[str, Any] = {
+        key: front.get(key, [] if key in _LIST_KEYS else None)
+        for key in FRONTMATTER_KEYS
+    }
+    ordered.update({k: v for k, v in front.items() if k not in ordered})
+    if list(ordered.items()) == list(front.items()):
+        return False
+
+    dumped = yaml.safe_dump(ordered, sort_keys=False, allow_unicode=True, width=10_000)
+    path.write_text(f"{_FENCE}\n{dumped}{_FENCE}\n\n{body}", encoding="utf-8")
+    return True
+
+
 def _note_to_paper(
     front: dict[str, Any], fallback_key: str
 ) -> tuple[Paper, str] | None:
@@ -407,22 +503,22 @@ def _note_to_paper(
     if not title:
         return None
 
-    raw_authors = front.get("authors")
-    authors = (
-        tuple(str(a).strip() for a in raw_authors if str(a).strip())
-        if isinstance(raw_authors, list)
-        else ()
-    )
-
     paper = Paper(
         title=title,
-        authors=authors,
+        authors=_names(front.get("authors")),
         year=_int(front.get("year")),
         doi=_str(front.get("doi")),
         venue=_str(front.get("venue")),
+        volume=_str(front.get("volume")),
+        number=_str(front.get("number")),
+        pages=_str(front.get("pages")),
+        publisher=_str(front.get("publisher")),
+        editors=_names(front.get("editors")),
+        month=_str(front.get("month")),
         url=_str(front.get("url")),
         citations=_int(front.get("citations")),
         open_access=_str(front.get("open_access")),
+        retracted=_str(front.get("retracted")),
         entry_type=_str(front.get("entry_type")) or "article",
         pdf_url=_str(front.get("pdf_url")),
     )

@@ -14,7 +14,7 @@ tool you point at the folder all depend on it.
 
 ```text
 <papers-dir>/
-├── maioli2021alfred.md      one note per resource, named <cite_key>.md
+├── ALFRED - Virtual Memory….md   one note per resource, named for its title
 └── …
 ../pdfs/
 ├── maioli2021alfred.pdf     open-access PDFs, named <cite_key>.pdf
@@ -22,9 +22,17 @@ tool you point at the folder all depend on it.
 ../topics/
 ├── Energy Harvesting.md     generated hub notes, one per shared theme
 └── …
+../screening.tsv             what was looked at and turned down
 ```
 
-`pdfs/` and `topics/` are **siblings** of the papers folder, not children of it.
+`pdfs/`, `topics/` and `screening.tsv` are **siblings** of the papers folder,
+not children of it. The ledger is not part of this format and has its own:
+[`docs/screening.md`](screening.md).
+
+A note is named for its **title**, sanitised for the filesystem; a PDF is named
+for its **cite key**. So the filename guards nothing about the key: two papers
+can carry one `cite_key` and still get two filenames. `bib --check` is what
+catches that.
 
 ## Frontmatter
 
@@ -39,14 +47,21 @@ table view has a column and a missing value is visibly missing.
 | `authors` | list | `paper` · `source` | Full names, in publication order. |
 | `year` | int \| null | `paper` · `source` | |
 | `venue` | string \| null | `paper` · `source` | |
+| `volume` | string \| null | `paper` · `tidy --bibfields` | |
+| `number` | string \| null | `paper` · `tidy --bibfields` | Crossref calls it `issue`; BibTeX calls it `number`. |
+| `pages` | string \| null | `paper` · `tidy --bibfields` | As the publisher gives it, so `1-28` and `1--28` both occur. |
+| `publisher` | string \| null | `paper` · `tidy --bibfields` | |
+| `editors` | list | `paper` · `tidy --bibfields` | Full names. Rendered only for the entry types that take one. |
+| `month` | string \| null | `paper` · `tidy --bibfields` | A bare number; the BibTeX style decides how to render it. |
 | `doi` | string \| null | `paper` | |
 | `openalex_id` | string \| null | `paper` · `relink` | The citation graph's join key, and the only identifier for works with no DOI. |
 | `url` | string \| null | `paper` · `source` | Landing page, when there is no `doi.org` link to give. |
 | `pdf` | wikilink \| null | `paper` · `tidy` | `[[<cite_key>.pdf]]` once a copy is filed. `tidy` adopts a hand-saved match. |
-| `pdf_url` | string \| null | `paper` | Where the open-access copy can be fetched. |
+| `pdf_url` | string \| null | `paper` · `relink` | Where the open-access copy can be fetched. |
 | `code_url` | string \| null | `paper` | |
-| `citations` | int \| null | `paper` | |
-| `open_access` | string \| null | `paper` | OpenAlex's status, lowercased. |
+| `citations` | int \| null | `paper` · `relink` | |
+| `open_access` | string \| null | `paper` · `relink` | OpenAlex's status, lowercased. |
+| `retracted` | string \| null | `paper` · `health --fix` | Crossref's strongest `updated-by` notice: `retraction`, `withdrawal`, `removal`, `partial_retraction` or `expression_of_concern`. **Derived**, never set by hand, and cleared again if the notice is withdrawn. |
 | `topics` | list of wikilinks | **`relink`** | `[[hub note]]`. Rewritten wholesale. |
 | `cites` | list of wikilinks | **`relink`** | Rewritten wholesale, to notes that actually exist. |
 | `tags` | list | `expand` · `tidy` | See [Tags](#tags). |
@@ -64,6 +79,20 @@ Two deliberate exceptions:
 |---|---|
 | `topics` | Describes the paper, not your view of it. |
 | the `read` tag | **Derived**, never set by hand. See below. |
+
+`retracted` is not a third exception. A retraction is a fact the registrar
+asserts about the resource, so it is intrinsic in the ordinary way, and like the
+`read` tag it is derived rather than claimed: nothing sets it by hand and a
+withdrawn notice clears it again.
+
+### Key order
+
+The order in the table above is the order every note is written in, and it is
+recorded once, in `vault.FRONTMATTER_KEYS`. A key added by a later release lands
+after `tags` on notes that predate it, because `update_frontmatter` appends what
+it has not seen. `tidy` puts them back, filling absent keys with `null` (or `[]`
+for the list-valued ones) and keeping any property added by hand after the known
+ones.
 
 ### Tags
 
@@ -108,6 +137,12 @@ section content, it never rewrites it.
 `## Key takeaway` was a fourth section until 0.2.0. It is now an ordinary
 hand-written heading. `tidy` drops it where it is empty, which is the migration,
 and preserves it wherever somebody actually wrote under it.
+
+0.3.0 added seven keys: `volume`, `number`, `pages`, `publisher`, `editors` and
+`month`, without which a generated `@article` rendered with no volume or page
+range; and `retracted`. All are additive, so a note written by 0.2.0 stays
+readable. `tidy` is the migration: it puts the frontmatter back in order, and
+`tidy --bibfields` fills the six bibliographic ones from Crossref.
 
 ## What a tool may overwrite
 

@@ -1,0 +1,8 @@
+# The CLI pins `requires-python = ">=3.14"`, but this hook does not run under the
+# CLI. `hooks.json` invokes it as bare `python3`, which is whatever the user's
+# machine has. Formatting it against py314 strips the parentheses from multi-
+# exception `except` clauses, which PEP 758 made optional in 3.14 and which every
+# earlier Python still requires -- turning the shipped hook into a SyntaxError on
+# every tool call.
+target-version = "py39"
+line-length = 88
