@@ -39,8 +39,14 @@ Install both: the plugin drives the CLI.
 **The CLI:**
 
 ```bash
-uv tool install git+https://github.com/namitdeb739/research-assistant
+uv tool install git+https://github.com/namitdeb739/research-assistant@v0.3.0
 ```
+
+Drop the `@v0.3.0` to track `main` instead. Pinning is the better default here
+because the **note format is versioned and the tag is the format**: 0.3.0 added
+seven frontmatter keys, and an unpinned reinstall can move a vault's format
+under you. `uv tool upgrade research-assistant` moves a pinned install forward
+only when you change the pin, which is the point.
 
 **The Claude Code plugin:**
 
