@@ -16,6 +16,12 @@ from __future__ import annotations
 import hashlib
 import struct
 import zlib
+from typing import TYPE_CHECKING
+
+import pypdfium2 as pdfium  # type: ignore[import-untyped]
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # PNG colour type 2 is truecolour: three 8-bit channels, no palette, no alpha.
 BIT_DEPTH = 8
@@ -98,3 +104,58 @@ def asset_name(page: int, rect: Rect) -> str:
     )
     digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=16).hexdigest()
     return f"p{page:02d}-{digest[:DIGEST_LENGTH]}.png"
+
+
+def _rgb(bitmap: pdfium.PdfBitmap) -> bytes:
+    """The bitmap's pixels as tight RGB, top row first.
+
+    Two things pdfium does that a naive read gets wrong: rows may be padded to
+    a stride wider than the pixels, and the buffer may carry a fourth alpha
+    channel. Both are handled here so the encoder only ever sees RGB.
+    """
+    channels = len(bitmap.mode)
+    if channels not in (3, 4):
+        raise FigureError(f"unexpected bitmap mode {bitmap.mode!r}")
+    buffer = bytes(bitmap.buffer)
+    out = bytearray()
+    for y in range(bitmap.height):
+        start = y * bitmap.stride
+        row = bytearray(buffer[start : start + bitmap.width * channels])
+        if channels == 4:
+            # RGBA: drop every fourth byte.
+            del row[3::4]
+        out += row
+    return bytes(out)
+
+
+def render(pdf: Path, page: int, rect: Rect, *, into: Path) -> Path:
+    """The asset for one rectangle of one page, rendering it only if absent.
+
+    ``rect`` is in PDF user space with the origin at the bottom left, which is
+    what an annotation's ``/Rect`` is in. pdfium crops by how much to cut from
+    each edge instead, so the four values are converted against the page size.
+    """
+    target = into / asset_name(page, rect)
+    if target.exists():
+        return target
+    try:
+        document = pdfium.PdfDocument(pdf)
+        if not 1 <= page <= len(document):
+            raise FigureError(f"{pdf}: page {page} of {len(document)}")
+        loaded = document[page - 1]
+        width, height = loaded.get_size()
+        x0, y0, x1, y1 = rect
+        bitmap = loaded.render(
+            scale=RENDER_SCALE,
+            draw_annots=DRAW_ANNOTS,
+            rev_byteorder=True,
+            crop=(x0, y0, width - x1, height - y1),
+        )
+        png = encode_png(bitmap.width, bitmap.height, _rgb(bitmap))
+    except FigureError:
+        raise
+    except Exception as exc:
+        raise FigureError(f"{pdf}: {exc}") from exc
+    into.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(png)
+    return target

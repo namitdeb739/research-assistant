@@ -8,10 +8,15 @@ from __future__ import annotations
 
 import struct
 import zlib
+from typing import TYPE_CHECKING
 
 import pytest
+from fixtures.make_highlights_pdf import write
 
 from research_assistant import figures
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # --- The encoder -----------------------------------------------------------
 
@@ -104,3 +109,51 @@ def test_asset_name_changes_with_the_render_scale(
     before = figures.asset_name(7, SQUARE)
     monkeypatch.setattr(figures, "RENDER_SCALE", figures.RENDER_SCALE * 2)
     assert figures.asset_name(7, SQUARE) != before
+
+
+# --- Rendering -------------------------------------------------------------
+
+
+@pytest.fixture
+def pdf(tmp_path: Path) -> Path:
+    return write(tmp_path / "render.pdf")
+
+
+def test_render_writes_the_asset_under_its_own_name(pdf: Path, tmp_path: Path) -> None:
+    into = tmp_path / "assets" / "yen2023soilpowered"
+    box: figures.Rect = (100.0, 600.0, 400.0, 750.0)
+    path = figures.render(pdf, 1, box, into=into)
+    assert path == into / figures.asset_name(1, box)
+    assert path.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_render_creates_the_folder(pdf: Path, tmp_path: Path) -> None:
+    into = tmp_path / "assets" / "yen2023soilpowered"
+    assert not into.exists()
+    figures.render(pdf, 1, (100.0, 600.0, 400.0, 750.0), into=into)
+    assert into.is_dir()
+
+
+def test_render_scales_the_crop_by_the_render_scale(pdf: Path, tmp_path: Path) -> None:
+    """A 300x150pt box at 200 DPI is about 833x417 pixels."""
+    path = figures.render(pdf, 1, (100.0, 600.0, 400.0, 750.0), into=tmp_path / "a")
+    width, height = struct.unpack(">II", dict(chunks(path.read_bytes()))[b"IHDR"][:8])
+    assert abs(width - round(300 * figures.RENDER_SCALE)) <= 2
+    assert abs(height - round(150 * figures.RENDER_SCALE)) <= 2
+
+
+def test_render_does_not_rewrite_an_asset_that_exists(
+    pdf: Path, tmp_path: Path
+) -> None:
+    """The guarantee the design rests on: a second run rasterises nothing."""
+    into = tmp_path / "a"
+    box: figures.Rect = (100.0, 600.0, 400.0, 750.0)
+    path = figures.render(pdf, 1, box, into=into)
+    path.write_bytes(b"sentinel")
+    assert figures.render(pdf, 1, box, into=into) == path
+    assert path.read_bytes() == b"sentinel"
+
+
+def test_render_reports_a_page_the_pdf_does_not_have(pdf: Path, tmp_path: Path) -> None:
+    with pytest.raises(figures.FigureError, match="page 9"):
+        figures.render(pdf, 9, (100.0, 600.0, 400.0, 750.0), into=tmp_path / "a")
