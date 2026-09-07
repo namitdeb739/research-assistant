@@ -1310,3 +1310,94 @@ def test_a_pdf_with_no_drawn_box_creates_no_assets_folder(tmp_path: Path) -> Non
     runner.invoke(cli.app, ["--papers-dir", str(papers), "highlights", KEY])
 
     assert not (tmp_path / "assets").exists()
+
+
+def test_a_cite_key_escaping_the_assets_folder_is_refused(tmp_path: Path) -> None:
+    """``cite_key`` is unvalidated frontmatter; it must not steer a write."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Soil-powered", key="../evil", pdf=f"{KEY}.pdf")
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir()
+    write_pdf(pdfs / f"{KEY}.pdf", with_figure=True)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "highlights", "Soil-powered"]
+    )
+
+    assert result.exit_code == 1
+    assert "../evil" in result.stdout or "../evil" in result.stderr
+    # Escaping "assets/../evil" lands here; nothing may be written there.
+    assert not (tmp_path / "evil").exists()
+    assert not (tmp_path / "assets").exists()
+
+
+def _apply_all(
+    papers: Path, items: list[dict[str, Any]], heading: str = "Figures"
+) -> None:
+    grouping_path = papers.parent / "groups.json"
+    grouping_path.write_text(
+        json.dumps({heading: [i["order"] for i in items]}), encoding="utf-8"
+    )
+    result = runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "highlights", KEY, "--apply", str(grouping_path)],
+    )
+    assert result.exit_code == 0, result.stdout
+
+
+def test_audit_reports_no_drift_for_a_clean_vault_with_a_figure(tmp_path: Path) -> None:
+    papers, _ = annotated_vault(tmp_path)
+    items = extracted(papers)
+    _apply_all(papers, items)
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "highlights", "--audit", "--json"]
+    )
+
+    assert result.exit_code == 0, result.stdout
+    payload = json.loads(result.stdout)
+    assert payload["drifted"] == []
+    assert payload["checked"] == len(items)
+
+
+def test_audit_names_the_asset_of_a_drifted_figure(tmp_path: Path) -> None:
+    """A moved box must be reported by its asset, not an unrelated quote."""
+    papers, _ = annotated_vault(tmp_path)
+    items = extracted(papers)
+    _apply_all(papers, items)
+    old_asset = items[0]["asset"]
+    assert old_asset is not None
+
+    # Move the drawn box, so a fresh extraction derives a different asset
+    # name than the one the note already embeds. That mismatch is the drift
+    # `--audit` exists to catch.
+    write_pdf(
+        tmp_path / "pdfs" / f"{KEY}.pdf",
+        with_figure=True,
+        figure_rect=(120.0, 730.0, 420.0, 780.0),
+    )
+
+    result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "highlights", "--audit"]
+    )
+    assert result.exit_code == 1
+    assert old_asset in result.stdout
+    assert "asset:" in result.stdout
+    # A figure's drift line must not fall back to the blank-note-plus-
+    # unrelated-quote report a plain quote drift gets.
+    assert "    note:" not in result.stdout
+    assert "    pdf:" not in result.stdout
+
+    json_result = runner.invoke(
+        cli.app, ["--papers-dir", str(papers), "highlights", "--audit", "--json"]
+    )
+    payload = json.loads(json_result.stdout)
+    assert payload["drifted"] == [
+        {
+            "cite_key": KEY,
+            "page": 1,
+            "in_note": "",
+            "extracted": None,
+            "asset": old_asset,
+        }
+    ]

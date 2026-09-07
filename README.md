@@ -264,6 +264,14 @@ as **geometry**. `highlights` recovers the text under them by intersecting
 `/QuadPoints` with the page's characters, in quad-array order, which is pdf.js's
 selection order and therefore reading order even across columns.
 
+A figure or table is not text, so it needs a different gesture: draw a
+rectangle, circle or polygon round it instead of selecting. `highlights` crops
+that box to a PNG under `assets/` and gives it an order number exactly like a
+quote, so it takes its place in the reading order and gets grouped the same
+way. See [Figures are the box you
+drew](docs/note-format.md#figures-are-the-box-you-drew) for what that embed
+looks like in the note.
+
 ```bash
 research-assistant highlights <key> > quotes.json    # verbatim, no model
 research-assistant highlights <key> --apply groups.json --dry-run

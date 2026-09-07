@@ -16,13 +16,11 @@ from __future__ import annotations
 import hashlib
 import os
 import struct
+import tempfile
 import zlib
-from typing import TYPE_CHECKING
+from pathlib import Path
 
 import pypdfium2 as pdfium  # type: ignore[import-untyped]
-
-if TYPE_CHECKING:
-    from pathlib import Path
 
 # PNG colour type 2 is truecolour: three 8-bit channels, no palette, no alpha.
 BIT_DEPTH = 8
@@ -163,10 +161,15 @@ def render(pdf: Path, page: int, rect: Rect, *, into: Path) -> Path:
     # a process killed mid-write leaves a truncated file that check treats as
     # done forever after. Writing to a same-directory temp file and swapping
     # it into place with `os.replace` (atomic on one filesystem) means a
-    # crash lands before the swap, never after it.
-    tmp = target.with_name(target.name + ".tmp")
+    # crash lands before the swap, never after it. The name must also be
+    # unique per run: a fixed `.tmp` suffix would let two concurrent renders
+    # of the same figure collide, so one process's `os.replace` could swap in
+    # the other's half-written bytes.
+    fd, tmp_name = tempfile.mkstemp(dir=into, prefix=target.name, suffix=".tmp")
+    tmp = Path(tmp_name)
     try:
-        tmp.write_bytes(png)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(png)
         os.replace(tmp, target)
     except Exception:
         tmp.unlink(missing_ok=True)

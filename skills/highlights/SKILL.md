@@ -122,6 +122,7 @@ first heading are fine; only a `### ` opens the machine region.
 | `grouping moves N already-grouped quote(s)` | Step 2: an already-placed quote changed heading, or a heading was respelled. Put it back, or `--regroup` if that was asked for. |
 | `grouping is a heading per quote` | Most headings hold one quote. That is a list, not a grouping, so find the ideas they share. |
 | stderr says `skipped N free-draw` | Either a highlight drawn free-hand, with no selection underneath, or a box drawn too small, too large, or off the page. For a quote, re-highlight by selecting text. For a figure, draw a tighter rectangle, circle or polygon round it; any reader's shape works. |
+| stderr says `skipped N no text` | A selection highlight drawn over a figure or table, where there is no text to recover. Draw a box round it instead; that is what turns it into a figure. |
 
 `highlights --audit` re-derives every quote in the vault from its PDF and
 reports any that no longer match, with both strings. It is the check that a

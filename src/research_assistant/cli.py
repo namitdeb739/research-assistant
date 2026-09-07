@@ -2324,6 +2324,29 @@ def _pdf_of(record: search.Record) -> Path:
     return record.pdf_path
 
 
+def _assets_into(record: search.Record, papers_dir: Path) -> Path:
+    """The per-paper folder ``figures.render`` will create and write into.
+
+    ``cite_key`` comes from the note's frontmatter with no validation, and
+    this is the first write it drives: ``figures.render`` ``mkdir(parents=
+    True)``s whatever this returns. A cite key holding ``../`` would escape
+    the assets folder into the rest of the vault, so the joined path is
+    resolved and checked before anything is created.
+    """
+    root = search.assets_dir_for(papers_dir)
+    into = root / record.cite_key
+    try:
+        into.resolve().relative_to(root.resolve())
+    except ValueError as exc:
+        typer.secho(
+            f"{record.cite_key}: cite_key escapes the assets folder ({into})",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(1) from exc
+    return into
+
+
 def _extract(record: search.Record, *, papers_dir: Path) -> list[highlights.Highlight]:
     """Read one note's PDF, rendering any boxed figure and reporting the rest.
 
@@ -2340,12 +2363,14 @@ def _extract(record: search.Record, *, papers_dir: Path) -> list[highlights.High
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
 
-    into = search.assets_dir_for(papers_dir) / record.cite_key
+    into = None
     resolved: list[highlights.Highlight] = []
     for item in found:
         if item.kind != highlights.KIND_FIGURE or item.rect is None:
             resolved.append(item)
             continue
+        if into is None:
+            into = _assets_into(record, papers_dir)
         try:
             path = figures.render(pdf, item.page, item.rect, into=into)
         except figures.FigureError as exc:
@@ -2361,7 +2386,7 @@ def _extract(record: search.Record, *, papers_dir: Path) -> list[highlights.High
             highlights.FREE_DRAW,
             "no text geometry; re-highlight by selection to capture them",
         ),
-        (highlights.NO_TEXT, "selected no text; over a figure?"),
+        (highlights.NO_TEXT, "selected no text; draw a box round it instead"),
     ):
         pages = [s.page for s in skipped if s.reason == reason]
         if pages:
@@ -2653,21 +2678,35 @@ def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> Non
         # rendered, since an audit must not write to disk.
         derived = {(h.page, h.text, _expected_asset(record.cite_key, h)) for h in found}
         in_note = {(q.page, q.text, q.asset) for _, quotes in groups for q in quotes}
-        for page, text, _asset in sorted(in_note - derived):
-            # The nearest quote on the same page is what it was probably edited
-            # from, and showing both is what makes the report actionable.
-            same_page = [h.text for h in found if h.page == page]
-            nearest = min(
-                same_page,
-                key=lambda candidate: _distance(candidate, text),
-                default=None,
-            )
+        # `str | None` third elements can't be compared directly by `sorted`;
+        # `asset or ""` gives every entry a comparable key without changing
+        # order among the (today, always disjoint) empty-text/asset-set pairs.
+        for page, text, asset in sorted(
+            in_note - derived, key=lambda e: (e[0], e[1], e[2] or "")
+        ):
+            if asset is not None:
+                # A figure's "text" is always empty, so the nearest-quote
+                # heuristic below is meaningless for it: it would compare ""
+                # against every quote on the page and report whichever one
+                # happens to be shortest, which repairs the wrong thing.
+                nearest = None
+            else:
+                # The nearest quote on the same page is what it was probably
+                # edited from, and showing both is what makes the report
+                # actionable.
+                same_page = [h.text for h in found if h.page == page]
+                nearest = min(
+                    same_page,
+                    key=lambda candidate: _distance(candidate, text),
+                    default=None,
+                )
             drifted.append(
                 {
                     "cite_key": record.cite_key,
                     "page": page,
                     "in_note": text,
                     "extracted": nearest,
+                    "asset": asset,
                 }
             )
         checked += len(in_note)
@@ -2690,8 +2729,14 @@ def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> Non
         )
         for entry in drifted:
             typer.echo(f"\n  {entry['cite_key']} p{entry['page']}")
-            typer.secho(f"    note: {entry['in_note']}", fg=typer.colors.YELLOW)
-            typer.secho(f"    pdf:  {entry['extracted']}", fg=typer.colors.CYAN)
+            if entry["asset"] is not None:
+                # A figure has no text to show either side of, so name the
+                # asset that no longer matches instead of an empty `note:`
+                # line paired with an unrelated quote.
+                typer.secho(f"    asset: {entry['asset']}", fg=typer.colors.YELLOW)
+            else:
+                typer.secho(f"    note: {entry['in_note']}", fg=typer.colors.YELLOW)
+                typer.secho(f"    pdf:  {entry['extracted']}", fg=typer.colors.CYAN)
         if unwritten:
             total = sum(unwritten.values())
             names = ", ".join(sorted(unwritten)[:5])

@@ -300,9 +300,22 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                         if rect is None:
                             skipped.append(Skipped(number, FREE_DRAW))
                             continue
+                        # `rect` is already shifted to the mediabox origin, for
+                        # the renderer (`_rect`'s docstring). A quote's order
+                        # key is built from its raw, untranslated quad, so
+                        # ordering `rect` directly would compare the two arms
+                        # in different coordinate spaces: on a page whose
+                        # mediabox does not start at (0, 0), a figure would
+                        # sort as if it sat lower than it does. Undo the shift
+                        # (`-dx, -dy` reverses `_rect`'s `-px0, -py0`) so the
+                        # key lands in the same page-user-space the quote arm
+                        # uses, and keep the shifted `rect` for the renderer.
+                        order_quad = _as_quad(
+                            (rect[0] - dx, rect[1] - dy, rect[2] - dx, rect[3] - dy)
+                        )
                         found.append(
                             (
-                                _order_key(number, _as_quad(rect)),
+                                _order_key(number, order_quad),
                                 number,
                                 "",
                                 KIND_FIGURE,

@@ -198,6 +198,39 @@ def test_a_figures_rect_is_translated_to_the_mediabox_origin(tmp_path: Path) -> 
     assert [(f.page, f.rect) for f in figures] == [(1, FIGURE_RECT)]
 
 
+def test_a_figures_order_uses_the_same_coordinate_space_as_a_quote(
+    tmp_path: Path,
+) -> None:
+    """A figure must order by its untranslated position, like a quote does.
+
+    The page-1 quote's first quad (the word "Solar") tops out at y=709,
+    untranslated -- pdfminer's CTM shifts *characters* by the mediabox origin,
+    but never touches a raw ``/QuadPoints`` value. This figure's *relative*
+    top, 707, sits just below that -- below the quote if ordered on the
+    rect ``_rect`` returns, which is already shifted to the mediabox origin
+    for the renderer. But the origin here is 3pt, so the figure's true,
+    untranslated top is 710: genuinely above the quote. Ordering by the
+    translated rect gets this backwards. 3pt is small enough that the
+    character/quad mismatch it also introduces (a separate, pre-existing
+    issue in how ``dx, dy`` line up with pdfminer's own translation) does not
+    swallow the highlight, so the quote still comes through, which is all
+    this test needs from it.
+    """
+    low_figure = (100.0, 655.0, 400.0, 707.0)
+    offset_pdf = write(
+        tmp_path / "low-offset.pdf",
+        with_figure=True,
+        figure_rect=low_figure,
+        mediabox_origin=(0.0, 3.0),
+    )
+    found, _ = highlights.extract(offset_pdf)
+    page_one = [h for h in found if h.page == 1]
+    assert [h.kind for h in page_one] == [
+        highlights.KIND_FIGURE,
+        highlights.KIND_QUOTE,
+    ]
+
+
 # --- The note region: parsing it back, and writing it ----------------------
 
 

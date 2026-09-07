@@ -111,6 +111,50 @@ def test_asset_name_changes_with_the_render_scale(
     assert figures.asset_name(7, SQUARE) != before
 
 
+# --- `_rgb`, the pixel-buffer cleanup -------------------------------------
+
+
+class _StubBitmap:
+    """Exposes only what `_rgb` reads: pdfium's real bitmap needs a live render."""
+
+    def __init__(self, mode: str, stride: int, buffer: bytes, width: int, height: int):
+        self.mode = mode
+        self.stride = stride
+        self.buffer = buffer
+        self.width = width
+        self.height = height
+
+
+def test_rgb_drops_every_fourth_byte_for_an_alpha_mode() -> None:
+    """The alpha branch: pdfium's 4-channel buffer, tight (no stride padding)."""
+    bitmap = _StubBitmap(
+        mode="BGRA",
+        stride=8,
+        buffer=b"\x01\x02\x03\xff\x04\x05\x06\xff",
+        width=2,
+        height=1,
+    )
+    assert figures._rgb(bitmap) == b"\x01\x02\x03\x04\x05\x06"
+
+
+def test_rgb_strips_stride_padding_beyond_the_pixel_bytes() -> None:
+    """A row wider than width*channels: the padding must not leak into RGB."""
+    bitmap = _StubBitmap(
+        mode="BGR",
+        stride=8,
+        buffer=b"\x01\x02\x03\x04\x05\x06\xaa\xaa",
+        width=2,
+        height=1,
+    )
+    assert figures._rgb(bitmap) == b"\x01\x02\x03\x04\x05\x06"
+
+
+def test_rgb_rejects_an_unexpected_channel_count() -> None:
+    bitmap = _StubBitmap(mode="L", stride=2, buffer=b"\x01\x02", width=2, height=1)
+    with pytest.raises(figures.FigureError, match="unexpected bitmap mode"):
+        figures._rgb(bitmap)
+
+
 # --- Rendering -------------------------------------------------------------
 
 
