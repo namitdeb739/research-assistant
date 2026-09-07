@@ -10,6 +10,7 @@ flowchart LR
     LIST["Reading List.md"]
     NOTES["papers/<br/>one note per paper"]
     PDFS["pdfs/"]
+    ASSETS["assets/"]
     TOPICS["topics/"]
     BIB["refs.bib"]
 
@@ -18,6 +19,8 @@ flowchart LR
     IDX -- "paper · promote" --> NOTES
     IDX -- "paper · promote" --> PDFS
     PDFS -- "highlights" --> NOTES
+    PDFS -- "highlights" --> ASSETS
+    ASSETS --> NOTES
     NOTES -- "relink" --> TOPICS
     NOTES -- "bib" --> BIB
     NOTES -- "find · show · near · open" --> ANS["answers"]
@@ -29,7 +32,8 @@ and what is already on disk, so re-running a command is idempotent and two peopl
 running it get the same vault. No abstract is summarised, no quote paraphrased,
 no field invented. Where a model does decide something, it decides which quotes
 belong together and what to call the group, never a word of the quotes
-themselves.
+themselves. A figure is no different: it is chosen by the box you drew round it
+in a PDF reader, and cropped verbatim, so a model never picks one either.
 
 The notes are the source of truth; the BibTeX file is generated from them. The
 note format, not the Python, is the public API. It is specified in
@@ -43,16 +47,16 @@ Install both: the plugin drives the CLI.
 **The CLI:**
 
 ```bash
-uv tool install git+https://github.com/namitdeb739/research-assistant@v0.4.0
+uv tool install git+https://github.com/namitdeb739/research-assistant@v0.5.0
 ```
 
-Drop the `@v0.4.0` to track `main` instead. Pinning is the better default here
+Drop the `@v0.5.0` to track `main` instead. Pinning is the better default here
 because the **note format is versioned and the tag is the format**: 0.3.0 added
 seven frontmatter keys, and an unpinned reinstall can move a vault's format
-under you. 0.4.0 leaves the note format alone; what grew is the screening
-ledger's row, from nine columns to thirteen. `uv tool upgrade
-research-assistant` moves a pinned install forward only when you change the
-pin, which is the point.
+under you. 0.5.0 adds the `assets/` folder and the figure embed, both additive:
+a note written by 0.4.0 stays valid, and a vault with no drawn boxes is
+byte-identical after the upgrade. `uv tool upgrade research-assistant` moves a
+pinned install forward only when you change the pin, which is the point.
 
 **The Claude Code plugin:**
 

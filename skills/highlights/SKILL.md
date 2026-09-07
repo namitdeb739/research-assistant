@@ -28,7 +28,9 @@ Stage 1 is deterministic and stage 2 is you, so the partition and the headings
 are the only part of this that will not come out the same twice. That is what
 the two guardrails in step 2 and step 3 exist to bound.
 
-You may **order**, **partition** and **label**. Nothing else.
+You may **order**, **partition** and **label**. Nothing else. A figure is
+grouped by its `order` number exactly as a quote is, and you never handle its
+`asset` path either — place the order number, and the CLI resolves the rest.
 
 Page 4 of `yen2023soilpowered` reads `low envrionmental impact`. That is a typo
 in the published paper, and anything that tidies it makes the note misquote its
@@ -47,8 +49,11 @@ source. So quotes are never edited, merged, split, or dropped:
 research-assistant highlights <key> > /tmp/quotes.json   # verbatim, no model
 ```
 
-Each entry is `{"order": 63, "page": 21, "text": "…", "group": "…" | null}`,
-where `group` is the heading that quote already sits under in the note.
+Each entry is
+`{"order": 63, "page": 21, "kind": "quote"|"figure", "text": "…", "asset": "…"|null, "group": "…"|null}`,
+where `group` is the heading that quote or figure already sits under in the
+note. A figure carries an `asset` path and an empty `text`; a quote carries
+`text` and a `null` asset.
 
 1. **Read the JSON.** If it is `[]`, the PDF has no highlights. Say so and
    stop. Note anything reported on stderr as skipped: a free-draw highlight has
@@ -116,7 +121,7 @@ first heading are fine; only a `### ` opens the machine region.
 | `grouping drops N highlight(s)` | Every order must be placed. Add the missing ones. |
 | `grouping moves N already-grouped quote(s)` | Step 2: an already-placed quote changed heading, or a heading was respelled. Put it back, or `--regroup` if that was asked for. |
 | `grouping is a heading per quote` | Most headings hold one quote. That is a list, not a grouping, so find the ideas they share. |
-| stderr says `skipped N free-draw` | Those highlights were drawn, not selected. Report it; nothing is recoverable. |
+| stderr says `skipped N free-draw` | Either a highlight drawn free-hand, with no selection underneath, or a box drawn too small, too large, or off the page. For a quote, re-highlight by selecting text. For a figure, draw a tighter rectangle, circle or polygon round it; any reader's shape works. |
 
 `highlights --audit` re-derives every quote in the vault from its PDF and
 reports any that no longer match, with both strings. It is the check that a

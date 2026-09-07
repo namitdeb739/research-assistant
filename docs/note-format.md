@@ -19,6 +19,10 @@ tool you point at the folder all depend on it.
 ../pdfs/
 ├── maioli2021alfred.pdf     open-access PDFs, named <cite_key>.pdf
 └── …
+../assets/
+├── maioli2021alfred/       cropped figures, one folder per paper
+│   └── p07-3f9a1c2b.png    named for its page and its crop box
+└── …
 ../topics/
 ├── Energy Harvesting.md     generated hub notes, one per shared theme
 └── …
@@ -26,11 +30,11 @@ tool you point at the folder all depend on it.
 ../Reading List.md           the pending rows of the ledger, rendered
 ```
 
-`pdfs/`, `topics/`, `screening.tsv` and `Reading List.md` are **siblings** of
-the papers folder, not children of it. The ledger is not part of this format and
-has its own: [`docs/screening.md`](screening.md). `Reading List.md` is a
-generated view of that ledger and is **not a paper note**: it has none of the
-frontmatter below, and nothing reads it back.
+`pdfs/`, `assets/`, `topics/`, `screening.tsv` and `Reading List.md` are
+**siblings** of the papers folder, not children of it. The ledger is not part
+of this format and has its own: [`docs/screening.md`](screening.md).
+`Reading List.md` is a generated view of that ledger and is **not a paper
+note**: it has none of the frontmatter below, and nothing reads it back.
 
 A note is named for its **title**, sanitised for the filesystem; a PDF is named
 for its **cite key**. So the filename guards nothing about the key: two papers
@@ -147,6 +151,10 @@ range; and `retracted`. All are additive, so a note written by 0.2.0 stays
 readable. `tidy` is the migration: it puts the frontmatter back in order, and
 `tidy --bibfields` fills the six bibliographic ones from Crossref.
 
+0.5.0 adds the `assets/` folder and the figure embed. Both are additive: a note
+written by 0.4.0 stays valid, and a vault with no drawn boxes is
+byte-identical after the upgrade.
+
 ## What a tool may overwrite
 
 `## Notes` has no delimiters. The contract is **positional**: the first `### `
@@ -187,6 +195,7 @@ Across the whole note:
 | `## PDF` | `paper`, `tidy` | Embed regenerated |
 | any other `##` heading | **you** | Preserved, moved but never rewritten |
 | `topics/*.md` | `relink` | **Regenerated wholesale** |
+| `assets/*` | `highlights` | Written once per crop box; never rewritten |
 
 ## Quotes are never altered
 
@@ -198,6 +207,21 @@ cannot trust is not evidence.
 
 `--apply` addresses quotes by their `order` number, never by their text, so the
 write path is structurally incapable of rewriting one.
+
+### Figures are the box you drew
+
+A rectangle drawn round a figure or table — `/Square`, `/Circle`, `/Polygon` or
+`/Ink`, from any PDF reader — is cropped to `assets/<cite_key>/` and embedded
+as a bullet in the same `### ` groups the quotes sit in, numbered into the same
+reading order:
+
+```markdown
+- ![[assets/garca2020iotbased/p07-3f9a1c2b.png]] ([[garca2020iotbased.pdf#page=7|p. 7]])
+```
+
+The filename is a digest of the page, the crop box and the render settings, so
+the same box always resolves to the same file and a re-run rewrites nothing.
+Nothing chooses a figure for you: no box, no figure.
 
 ## Topic hubs
 

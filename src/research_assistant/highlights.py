@@ -420,7 +420,12 @@ def split_notes(section: str) -> tuple[str, list[tuple[str, list[Quote]]]]:
 
 
 def _item(quote: Quote, *, pdf_name: str) -> str:
-    """One bullet: the quote or the embed, then its page link, wrapped."""
+    """One bullet: the quote or the embed, then its page link, wrapped to width.
+
+    The link's own spaces are held by a placeholder while wrapping, so it is one
+    unbreakable token and never ends up split across two lines. An asset path
+    needs no such guard: it holds no spaces to begin with.
+    """
     body = (
         f"{EMBED_OPEN}{quote.asset}{EMBED_CLOSE}"
         if quote.asset is not None
