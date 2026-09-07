@@ -210,11 +210,13 @@ def test_a_figures_order_uses_the_same_coordinate_space_as_a_quote(
     rect ``_rect`` returns, which is already shifted to the mediabox origin
     for the renderer. But the origin here is 3pt, so the figure's true,
     untranslated top is 710: genuinely above the quote. Ordering by the
-    translated rect gets this backwards. 3pt is small enough that the
-    character/quad mismatch it also introduces (a separate, pre-existing
-    issue in how ``dx, dy`` line up with pdfminer's own translation) does not
-    swallow the highlight, so the quote still comes through, which is all
-    this test needs from it.
+    translated rect gets this backwards.
+
+    The 3pt origin was originally chosen small so that a separate bug, which
+    shifted characters the wrong way and swallowed the quote outright, would
+    not also break this test. That bug is fixed, and any origin works now;
+    3pt is kept only because the margin it leaves between 707 and 709 is what
+    makes an ordering mistake visible here.
     """
     low_figure = (100.0, 655.0, 400.0, 707.0)
     offset_pdf = write(
@@ -229,6 +231,29 @@ def test_a_figures_order_uses_the_same_coordinate_space_as_a_quote(
         highlights.KIND_FIGURE,
         highlights.KIND_QUOTE,
     ]
+
+
+def test_a_quote_survives_a_mediabox_that_does_not_start_at_the_origin(
+    tmp_path: Path,
+) -> None:
+    """The offset must be added back to a character, not taken off twice.
+
+    pdfminer hands back an ``LTChar`` already normalised to a (0, 0) origin,
+    while ``/QuadPoints`` stay in the page's own user space. Comparing the two
+    means putting the origin back onto the character. Subtracting it instead
+    puts the character *twice* the offset away from its quad, which matches no
+    quad at all, and the passage is silently lost rather than corrupted.
+
+    Offsets of 20 and 50 are larger than a line is tall, so the quad cannot
+    accidentally still contain the doubly-shifted glyph, and they differ from
+    each other so a swapped axis fails too.
+    """
+    offset_pdf = write(tmp_path / "offset-quote.pdf", mediabox_origin=(20.0, 50.0))
+
+    found, _ = highlights.extract(offset_pdf)
+
+    quotes = [h.text for h in found if h.kind == highlights.KIND_QUOTE]
+    assert quotes[:1] == [PAGE_ONE]
 
 
 # --- The note region: parsing it back, and writing it ----------------------

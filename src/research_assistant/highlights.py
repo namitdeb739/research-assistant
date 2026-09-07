@@ -193,14 +193,22 @@ def _chars(container: LTContainer[Any]) -> Iterator[LTChar]:
             yield from _chars(item)
 
 
-def _inside(char: LTChar, quad: tuple[float, ...], dx: float, dy: float) -> bool:
+def _inside(
+    char: LTChar, quad: tuple[float, ...], to_page_x: float, to_page_y: float
+) -> bool:
     """Whether the character's *centre* falls in the quad.
 
     The centre, not any overlap: a quad's edge cuts through the glyphs either
     side of the selection boundary, and admitting those over-captures.
+
+    ``to_page_x`` and ``to_page_y`` carry the character out of pdfminer's
+    origin-normalised space and into the page's own, which is where the quad
+    already lives. They are named for the space they arrive in rather than for
+    a delta, because the direction is the whole of what this has to get right.
     """
     xs, ys = quad[0::2], quad[1::2]
-    cx, cy = (char.x0 + char.x1) / 2 + dx, (char.y0 + char.y1) / 2 + dy
+    cx = (char.x0 + char.x1) / 2 + to_page_x
+    cy = (char.y0 + char.y1) / 2 + to_page_y
     return min(xs) <= cx <= max(xs) and min(ys) <= cy <= max(ys)
 
 
@@ -288,8 +296,14 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                 interpreter.process_page(page)
                 chars = list(_chars(device.get_result()))
                 # pdfminer translates the mediabox origin to (0, 0); the quads
-                # are still in the page's own user space.
-                dx, dy = -float(page.mediabox[0]), -float(page.mediabox[1])
+                # are still in the page's own user space. So the origin is
+                # added *back* onto a character to compare the two. Subtracting
+                # it here instead moved the glyph twice the offset away from
+                # its quad, matching nothing, and the passage was lost rather
+                # than corrupted. The names say which space they land in,
+                # because a sign is the one thing this cannot get wrong twice.
+                to_page_x = float(page.mediabox[0])
+                to_page_y = float(page.mediabox[1])
                 for annot in annots:
                     resolved = resolve1(annot)
                     if not isinstance(resolved, dict):
@@ -306,12 +320,17 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                         # ordering `rect` directly would compare the two arms
                         # in different coordinate spaces: on a page whose
                         # mediabox does not start at (0, 0), a figure would
-                        # sort as if it sat lower than it does. Undo the shift
-                        # (`-dx, -dy` reverses `_rect`'s `-px0, -py0`) so the
+                        # sort as if it sat lower than it does. Adding the
+                        # origin back reverses `_rect`'s `-px0, -py0`, so the
                         # key lands in the same page-user-space the quote arm
-                        # uses, and keep the shifted `rect` for the renderer.
+                        # uses, and the shifted `rect` is kept for the renderer.
                         order_quad = _as_quad(
-                            (rect[0] - dx, rect[1] - dy, rect[2] - dx, rect[3] - dy)
+                            (
+                                rect[0] + to_page_x,
+                                rect[1] + to_page_y,
+                                rect[2] + to_page_x,
+                                rect[3] + to_page_y,
+                            )
                         )
                         found.append(
                             (
@@ -333,7 +352,11 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                     seen: set[int] = set()
                     for quad in quads:
                         run = sorted(
-                            (c for c in chars if _inside(c, quad, dx, dy)),
+                            (
+                                c
+                                for c in chars
+                                if _inside(c, quad, to_page_x, to_page_y)
+                            ),
                             key=lambda c: c.x0,
                         )
                         # Quads overlap, so a character must not be emitted twice.
