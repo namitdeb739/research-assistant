@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
-from fixtures.make_highlights_pdf import PAGE_ONE, PAGE_TWO, write
+from fixtures.make_highlights_pdf import FIGURE_RECT, PAGE_ONE, PAGE_TWO, write
 from pdfminer.pdfpage import PDFPage
 from pdfminer.pdftypes import resolve1
 
@@ -125,6 +125,62 @@ def test_extract_reports_a_malformed_pdf(tmp_path: Path) -> None:
     broken.write_bytes(b"%PDF-1.4\nnot really\n")
     with pytest.raises(highlights.HighlightError, match=r"broken\.pdf"):
         highlights.extract(broken)
+
+
+@pytest.fixture
+def figure_pdf(tmp_path: Path) -> Path:
+    """The same PDF, plus a ``/Square`` above the page-1 highlight."""
+    return write(tmp_path / "figures.pdf", with_figure=True)
+
+
+def test_extract_admits_a_drawn_rectangle(figure_pdf: Path) -> None:
+    found, _ = highlights.extract(figure_pdf)
+    figures = [h for h in found if h.kind == highlights.KIND_FIGURE]
+    assert [(f.page, f.rect) for f in figures] == [(1, FIGURE_RECT)]
+
+
+def test_a_figure_carries_no_text(figure_pdf: Path) -> None:
+    """``text`` means what the page says, and a rectangle says nothing."""
+    found, _ = highlights.extract(figure_pdf)
+    assert [h.text for h in found if h.kind == highlights.KIND_FIGURE] == [""]
+
+
+def test_a_figure_is_numbered_by_where_it_sits_on_the_page(
+    figure_pdf: Path,
+) -> None:
+    """The square is above the page-1 highlight, so it takes order 1."""
+    found, _ = highlights.extract(figure_pdf)
+    assert [(h.order, h.page, h.kind) for h in found] == [
+        (1, 1, highlights.KIND_FIGURE),
+        (2, 1, highlights.KIND_QUOTE),
+        (3, 2, highlights.KIND_QUOTE),
+    ]
+
+
+def test_a_drawn_shape_with_a_whole_page_rect_is_skipped(figure_pdf: Path) -> None:
+    """The area ceiling, which is the only thing that catches a free-draw box.
+
+    ``FLT_MAX`` is a finite float and clips to exactly the page, so a
+    finiteness check would admit it and crop the whole page as a "figure".
+    """
+    found, skipped = highlights.extract(figure_pdf)
+    assert [(s.page, s.reason) for s in skipped] == [
+        (1, highlights.FREE_DRAW),  # the /Square carrying FLT_MAX
+        (2, highlights.FREE_DRAW),  # the quad-less /Highlight
+    ]
+    assert all(h.rect != (0.0, 0.0, 612.0, 792.0) for h in found)
+
+
+def test_a_stray_click_is_not_a_figure(tmp_path: Path) -> None:
+    """Below 100 pt^2 there is nothing worth cropping."""
+    tiny = write(tmp_path / "tiny.pdf", with_figure=True, figure_rect=(10, 10, 15, 15))
+    found, _ = highlights.extract(tiny)
+    assert [h.kind for h in found] == [highlights.KIND_QUOTE] * 2
+
+
+def test_a_quote_still_reports_its_kind(fixture_pdf: Path) -> None:
+    found, _ = highlights.extract(fixture_pdf)
+    assert {h.kind for h in found} == {highlights.KIND_QUOTE}
 
 
 # --- The note region: parsing it back, and writing it ----------------------

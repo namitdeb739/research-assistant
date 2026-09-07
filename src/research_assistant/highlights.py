@@ -58,6 +58,21 @@ HEADING_PREFIX = "### "
 FREE_DRAW = "free-draw"
 NO_TEXT = "no text"
 
+KIND_QUOTE = "quote"
+KIND_FIGURE = "figure"
+
+# The shapes you draw, as against the selection you drag. Preview writes
+# `/Square`, and the others are what the same gesture becomes in other readers.
+FIGURE_SUBTYPES = frozenset({"Square", "Circle", "Polygon", "Ink"})
+
+# A free-draw annotation records no geometry: its `/Rect` is
+# `[0 0 FLT_MAX FLT_MAX]`, which is *finite* and clips to exactly the page. So
+# the discriminator has to be area, not a finiteness check.
+PAGE_AREA_CEILING = 0.9
+
+# 100 pt^2 is a 10x10pt box: below this it is a stray click, not a figure.
+MIN_FIGURE_AREA = 100.0
+
 # A heading with one quote under it is fine; a heading per quote is not a
 # grouping. Fewer headings than this and there is nothing to group, so the check
 # would fire only on notes holding two or three highlights in total.
@@ -70,11 +85,13 @@ class HighlightError(Exception):
 
 @dataclass(frozen=True, slots=True)
 class Highlight:
-    """One highlighted passage, as the PDF has it."""
+    """One highlighted passage or one boxed figure, as the PDF has it."""
 
     page: int
     text: str
     order: int
+    kind: str = KIND_QUOTE
+    rect: tuple[float, float, float, float] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -123,6 +140,42 @@ def _quads(annot: Mapping[str, Any]) -> list[tuple[float, ...]]:
         return []
     numbers = [float(p) for p in points]
     return [tuple(numbers[i : i + 8]) for i in range(0, len(numbers) - 7, 8)]
+
+
+def _rect(
+    annot: Mapping[str, Any], box: Sequence[float]
+) -> tuple[float, float, float, float] | None:
+    """A drawn shape's ``/Rect``, normalised and clipped to the page.
+
+    ``None`` when the rectangle is unusable: inverted to nothing by the clip,
+    a stray click, or the whole-page rectangle a free-draw writes.
+    """
+    values = resolve1(annot.get("Rect"))
+    if not isinstance(values, list) or len(values) != 4:
+        return None
+    try:
+        x0, y0, x1, y1 = (float(v) for v in values)
+    except TypeError, ValueError:
+        return None
+    px0, py0, px1, py1 = (float(v) for v in box)
+    left, right = max(min(x0, x1), px0), min(max(x0, x1), px1)
+    bottom, top = max(min(y0, y1), py0), min(max(y0, y1), py1)
+    if right <= left or top <= bottom:
+        return None
+    area = (right - left) * (top - bottom)
+    page_area = (px1 - px0) * (py1 - py0)
+    if area < MIN_FIGURE_AREA or area >= PAGE_AREA_CEILING * page_area:
+        return None
+    # Translated to the mediabox origin, the same shift pdfminer applies to the
+    # characters. A page whose mediabox does not start at (0, 0) is rare but
+    # real, and the renderer measures its crop from the page's own edge.
+    return (left - px0, bottom - py0, right - px0, top - py0)
+
+
+def _as_quad(rect: tuple[float, ...]) -> tuple[float, ...]:
+    """A rectangle in the 8-number quad form ``_order_key`` reads."""
+    x0, y0, x1, y1 = rect
+    return (x0, y1, x1, y1, x0, y0, x1, y0)
 
 
 def _chars(container: LTContainer[Any]) -> Iterator[LTChar]:
@@ -206,7 +259,15 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
     identity the note writer addresses a quote by, so the model never handles
     quote text at all.
     """
-    found: list[tuple[tuple[int, float, float], int, str]] = []
+    found: list[
+        tuple[
+            tuple[int, float, float],
+            int,
+            str,
+            str,
+            tuple[float, float, float, float] | None,
+        ]
+    ] = []
     skipped: list[Skipped] = []
     manager = PDFResourceManager()
     device = PDFPageAggregator(manager, laparams=None)
@@ -226,7 +287,23 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                     resolved = resolve1(annot)
                     if not isinstance(resolved, dict):
                         continue
-                    if _name(resolved.get("Subtype")) != "Highlight":
+                    subtype = _name(resolved.get("Subtype"))
+                    if subtype in FIGURE_SUBTYPES:
+                        rect = _rect(resolved, page.mediabox)
+                        if rect is None:
+                            skipped.append(Skipped(number, FREE_DRAW))
+                            continue
+                        found.append(
+                            (
+                                _order_key(number, _as_quad(rect)),
+                                number,
+                                "",
+                                KIND_FIGURE,
+                                rect,
+                            )
+                        )
+                        continue
+                    if subtype != "Highlight":
                         continue
                     quads = _quads(resolved)
                     if not quads:
@@ -248,7 +325,9 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
                     if not text:
                         skipped.append(Skipped(number, NO_TEXT))
                         continue
-                    found.append((_order_key(number, quads[0]), number, text))
+                    found.append(
+                        (_order_key(number, quads[0]), number, text, KIND_QUOTE, None)
+                    )
     except HighlightError:
         raise
     except Exception as exc:
@@ -256,8 +335,8 @@ def extract(path: Path) -> tuple[list[Highlight], list[Skipped]]:
 
     found.sort(key=lambda entry: entry[0])
     highlights = [
-        Highlight(page=page, text=text, order=index)
-        for index, (_, page, text) in enumerate(found, start=1)
+        Highlight(page=page, text=text, order=index, kind=kind, rect=rect)
+        for index, (_, page, text, kind, rect) in enumerate(found, start=1)
     ]
     return highlights, skipped
 

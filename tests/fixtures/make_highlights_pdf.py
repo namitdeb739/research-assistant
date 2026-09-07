@@ -36,6 +36,11 @@ ASCENT, DESCENT = 9.0, 3.0
 # spanning the whole float range.
 FLT_MAX = "340282346638528859811704183484516925440"
 
+# A rectangle drawn round a figure, as Preview, Skim and Acrobat all write one.
+# It sits above the page-1 highlight (whose quads top out near y=710), so
+# reading order must place it first.
+FIGURE_RECT = (100.0, 730.0, 400.0, 780.0)
+
 PAGE_ONE = "Solar panels are prone to getting covered today"
 PAGE_TWO = "end of left start of right"
 
@@ -85,8 +90,18 @@ def _highlight(words: list[Word]) -> str:
     )
 
 
-def build() -> bytes:
-    """The whole PDF: two pages, two selection highlights, one free-draw."""
+def build(
+    *,
+    with_figure: bool = False,
+    figure_rect: tuple[float, float, float, float] = FIGURE_RECT,
+) -> bytes:
+    """The whole PDF: two pages, two selection highlights, one free-draw.
+
+    ``with_figure`` adds two drawn shapes to page 1: a ``/Square`` at
+    ``figure_rect``, and a second one carrying the whole-page ``FLT_MAX``
+    rectangle a free-draw writes, which the area ceiling must reject. Without
+    the second, nothing distinguishes an area test from a finiteness test.
+    """
     # Page 1: one column, one highlight spanning two lines. `ignored` sits on
     # the second line but outside every quad, so it proves the char selection
     # stops at the highlight's boundary rather than taking the whole line.
@@ -108,6 +123,21 @@ def build() -> bytes:
         f"<</Type/Annot/Subtype/Highlight/Rect [0 0 {FLT_MAX} {FLT_MAX}]/AP null>>"
     )
 
+    def _square(rect: tuple[float, float, float, float]) -> str:
+        x0, y0, x1, y1 = rect
+        return (
+            f"<</Type/Annot/Subtype/Square"
+            f"/Rect [{x0:g} {y0:g} {x1:g} {y1:g}]/C [1 1 0]>>"
+        )
+
+    drawn = (
+        f" {_square(figure_rect)}"
+        f" <</Type/Annot/Subtype/Square/Rect [0 0 {FLT_MAX} {FLT_MAX}]/C [1 1 0]>>"
+        if with_figure
+        else ""
+    )
+    page_one_annots = f"{_highlight(page_one_quads)}{drawn}"
+
     streams = [_stream(page_one_words), _stream(page_two_words)]
     objects: list[bytes] = [
         b"<</Type/Catalog/Pages 2 0 R>>",
@@ -115,7 +145,7 @@ def build() -> bytes:
         (
             "<</Type/Page/Parent 2 0 R/MediaBox [0 0 612 792]"
             "/Resources <</Font <</F1 7 0 R>>>>/Contents 4 0 R"
-            f"/Annots [{_highlight(page_one_quads)}]>>"
+            f"/Annots [{page_one_annots}]>>"
         ).encode("ascii"),
         b"",  # 4: page 1 content stream, filled in below
         (
@@ -162,7 +192,12 @@ def build() -> bytes:
     return bytes(out)
 
 
-def write(path: Path) -> Path:
+def write(
+    path: Path,
+    *,
+    with_figure: bool = False,
+    figure_rect: tuple[float, float, float, float] = FIGURE_RECT,
+) -> Path:
     """Write the fixture PDF to ``path`` and return it."""
-    path.write_bytes(build())
+    path.write_bytes(build(with_figure=with_figure, figure_rect=figure_rect))
     return path
