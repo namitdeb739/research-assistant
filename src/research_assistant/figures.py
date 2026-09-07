@@ -14,6 +14,7 @@ never re-rendered, so a library upgrade cannot churn a vault.
 from __future__ import annotations
 
 import hashlib
+import os
 import struct
 import zlib
 from typing import TYPE_CHECKING
@@ -157,5 +158,17 @@ def render(pdf: Path, page: int, rect: Rect, *, into: Path) -> Path:
     except Exception as exc:
         raise FigureError(f"{pdf}: {exc}") from exc
     into.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(png)
+    # The existence check above is the only thing standing between a torn
+    # write and a permanently "finished" asset: written straight to `target`,
+    # a process killed mid-write leaves a truncated file that check treats as
+    # done forever after. Writing to a same-directory temp file and swapping
+    # it into place with `os.replace` (atomic on one filesystem) means a
+    # crash lands before the swap, never after it.
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_bytes(png)
+        os.replace(tmp, target)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
     return target

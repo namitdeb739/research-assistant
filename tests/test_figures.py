@@ -157,3 +157,23 @@ def test_render_does_not_rewrite_an_asset_that_exists(
 def test_render_reports_a_page_the_pdf_does_not_have(pdf: Path, tmp_path: Path) -> None:
     with pytest.raises(figures.FigureError, match="page 9"):
         figures.render(pdf, 9, (100.0, 600.0, 400.0, 750.0), into=tmp_path / "a")
+
+
+def test_render_leaves_no_file_behind_when_the_write_is_interrupted(
+    pdf: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write that dies partway must not leave a target-shaped file behind.
+
+    Without the atomic swap, a crash between opening and finishing the write
+    to ``target`` leaves a truncated file that the existence check on the
+    fast path would mistake for a finished render, forever.
+    """
+    into = tmp_path / "a"
+
+    def broken_replace(*_args: object, **_kwargs: object) -> None:
+        raise OSError("simulated crash mid-write")
+
+    monkeypatch.setattr("os.replace", broken_replace)
+    with pytest.raises(OSError, match="simulated crash"):
+        figures.render(pdf, 1, (100.0, 600.0, 400.0, 750.0), into=into)
+    assert list(into.iterdir()) == []
