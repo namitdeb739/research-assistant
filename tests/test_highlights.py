@@ -288,6 +288,92 @@ def test_two_identical_quotes_from_different_pages_both_survive() -> None:
     assert parsed[0][1] == groups[0][1]
 
 
+ASSET = "assets/yen2023soilpowered/p07-3f9a1c2b.png"
+
+
+def figure_quote(page: int, asset: str) -> highlights.Quote:
+    return highlights.Quote(page=page, text="", asset=asset)
+
+
+def test_a_figure_renders_as_an_embed_bullet() -> None:
+    """The bullet plus its page link is 90 chars, over WRAP_WIDTH, so the link
+    wraps onto a continuation line; the embed itself stays whole.
+    """
+    section = render("", [("Cell design", [figure_quote(7, ASSET)])])
+    assert section == (
+        f"### Cell design\n\n- ![[{ASSET}]]\n  ([[{PDF_NAME}#page=7|p. 7]])"
+    )
+
+
+def test_a_figure_round_trips_through_render_and_split() -> None:
+    groups = [("Cell design", [figure_quote(7, ASSET)])]
+    _, parsed = highlights.split_notes(render("", groups))
+    assert parsed == [(name, list(qs)) for name, qs in groups]
+
+
+def test_a_figure_and_a_quote_share_one_group() -> None:
+    groups = [
+        (
+            "Cell design",
+            [figure_quote(7, ASSET), *quotes((7, "produce as much as 200 µW"))],
+        )
+    ]
+    _, parsed = highlights.split_notes(render("", groups))
+    assert parsed == [(name, list(qs)) for name, qs in groups]
+
+
+def test_an_embed_is_not_wrapped_across_lines() -> None:
+    """The asset path is one token; splitting it would break the link."""
+    long_asset = "assets/a-very-long-cite-key-indeed-2020/p07-3f9a1c2b.png"
+    section = render("", [("G", [figure_quote(7, long_asset)])])
+    assert f"![[{long_asset}]]" in section
+
+
+def test_group_quotes_places_a_figure_by_its_order() -> None:
+    found = [
+        highlights.Highlight(
+            page=1, text="", order=1, kind=highlights.KIND_FIGURE, asset=ASSET
+        ),
+        highlights.Highlight(page=1, text="a quote", order=2),
+    ]
+    groups = highlights.group_quotes(found, {"G": [1, 2]})
+    assert groups == [
+        (
+            "G",
+            [
+                highlights.Quote(page=1, text="", asset=ASSET),
+                highlights.Quote(page=1, text="a quote"),
+            ],
+        )
+    ]
+
+
+def test_grouping_of_recovers_a_figure() -> None:
+    found = [
+        highlights.Highlight(
+            page=7, text="", order=1, kind=highlights.KIND_FIGURE, asset=ASSET
+        )
+    ]
+    grouping, unresolved = highlights.grouping_of(
+        found, [("Cell design", [figure_quote(7, ASSET)])]
+    )
+    assert grouping == {"Cell design": [1]}
+    assert unresolved == []
+
+
+def test_a_figure_whose_asset_moved_is_unresolved() -> None:
+    """A nudged annotation renames its asset, and that is drift, not a repair."""
+    found = [
+        highlights.Highlight(
+            page=7, text="", order=1, kind=highlights.KIND_FIGURE, asset=ASSET
+        )
+    ]
+    stale = figure_quote(7, "assets/yen2023soilpowered/p07-deadbeef.png")
+    grouping, unresolved = highlights.grouping_of(found, [("Cell design", [stale])])
+    assert grouping == {"Cell design": []}
+    assert unresolved == [stale]
+
+
 # --- Grouping by order: the model never handles quote text -----------------
 
 

@@ -55,6 +55,11 @@ BULLET = "- "
 CONTINUATION = "  "
 HEADING_PREFIX = "### "
 
+# An Obsidian embed, as one unbreakable token: an asset path holds no spaces,
+# so unlike a page link it needs no placeholder while wrapping.
+EMBED_OPEN = "![["
+EMBED_CLOSE = "]]"
+
 FREE_DRAW = "free-draw"
 NO_TEXT = "no text"
 
@@ -92,6 +97,7 @@ class Highlight:
     order: int
     kind: str = KIND_QUOTE
     rect: tuple[float, float, float, float] | None = None
+    asset: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -104,10 +110,11 @@ class Skipped:
 
 @dataclass(frozen=True, slots=True)
 class Quote:
-    """One bullet as it appears in a note: the text, and the page it cites."""
+    """One bullet as it appears in a note: the text or embed, and its page."""
 
     page: int
     text: str
+    asset: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -387,7 +394,12 @@ def split_notes(section: str) -> tuple[str, list[tuple[str, list[Quote]]]]:
         match = _TRAILING_LINK.search(joined)
         text = joined[: match.start()].rstrip() if match else ""
         if text and match is not None:
-            groups[-1][1].append(Quote(page=int(match.group(1)), text=text))
+            page = int(match.group(1))
+            if text.startswith(EMBED_OPEN) and text.endswith(EMBED_CLOSE):
+                asset = text[len(EMBED_OPEN) : -len(EMBED_CLOSE)]
+                groups[-1][1].append(Quote(page=page, text="", asset=asset))
+            else:
+                groups[-1][1].append(Quote(page=page, text=text))
         block.clear()
 
     for line in lines[start:]:
@@ -408,14 +420,15 @@ def split_notes(section: str) -> tuple[str, list[tuple[str, list[Quote]]]]:
 
 
 def _item(quote: Quote, *, pdf_name: str) -> str:
-    """One bullet: the quote, then its page link, wrapped to the repo's width.
-
-    The link's own spaces are held by a placeholder while wrapping, so it is one
-    unbreakable token and never ends up split across two lines.
-    """
+    """One bullet: the quote or the embed, then its page link, wrapped."""
+    body = (
+        f"{EMBED_OPEN}{quote.asset}{EMBED_CLOSE}"
+        if quote.asset is not None
+        else quote.text
+    )
     link = f"({page_link(pdf_name, quote.page)})"
     wrapped = textwrap.wrap(
-        f"{quote.text} {link.replace(' ', _GUARD)}",
+        f"{body} {link.replace(' ', _GUARD)}",
         width=WRAP_WIDTH,
         initial_indent=BULLET,
         subsequent_indent=CONTINUATION,
@@ -510,7 +523,11 @@ def group_quotes(
         (
             heading,
             [
-                Quote(page=by_order[order].page, text=by_order[order].text)
+                Quote(
+                    page=by_order[order].page,
+                    text=by_order[order].text,
+                    asset=by_order[order].asset,
+                )
                 for order in orders
             ],
         )
@@ -529,13 +546,13 @@ def grouping_of(
     quote the PDF no longer produces is drift, and is handed back rather than
     guessed at; ``--audit`` is what explains it.
     """
-    by_key = {(h.page, h.text): h.order for h in highlights}
+    by_key = {(h.page, h.text, h.asset): h.order for h in highlights}
     grouping: dict[str, list[int]] = {}
     unresolved: list[Quote] = []
     for heading, quotes in groups:
         orders = grouping.setdefault(heading, [])
         for quote in quotes:
-            order = by_key.get((quote.page, quote.text))
+            order = by_key.get((quote.page, quote.text, quote.asset))
             if order is None:
                 unresolved.append(quote)
             else:
