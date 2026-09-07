@@ -13,6 +13,7 @@ never re-rendered, so a library upgrade cannot churn a vault.
 
 from __future__ import annotations
 
+import hashlib
 import struct
 import zlib
 
@@ -21,6 +22,22 @@ BIT_DEPTH = 8
 COLOUR_TYPE = 2
 CHANNELS = 3
 SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
+# 200 DPI over the PDF's 72. At 150 the serifs of a figure caption go soft; 300
+# roughly doubles the bytes for a difference Obsidian's preview does not show.
+RENDER_SCALE = 200 / 72
+
+# The crop is the paper, not the paper with your own box drawn across it.
+DRAW_ANNOTS = False
+
+# 0.1pt is 0.035mm. Rounding first stabilises float formatting, and merges only
+# boxes no hand could tell apart.
+RECT_PRECISION = 1
+
+# Eight hex characters, inside a namespace of one paper's figures.
+DIGEST_LENGTH = 8
+
+type Rect = tuple[float, float, float, float]
 
 
 class FigureError(Exception):
@@ -61,3 +78,23 @@ def encode_png(width: int, height: int, pixels: bytes) -> bytes:
         + _chunk(b"IDAT", zlib.compress(raw, 9))
         + _chunk(b"IEND", b"")
     )
+
+
+def asset_name(page: int, rect: Rect) -> str:
+    """The filename a page and a rectangle always resolve to.
+
+    Every input to the render goes into the digest, not just the geometry: if
+    the scale constant is ever changed, every asset gets a new name and is
+    re-rendered, rather than stale content hiding behind a name that still
+    looks current.
+    """
+    seed = "|".join(
+        [
+            str(page),
+            *(f"{value:.{RECT_PRECISION}f}" for value in rect),
+            f"{RENDER_SCALE:.6f}",
+            str(DRAW_ANNOTS),
+        ]
+    )
+    digest = hashlib.blake2b(seed.encode("utf-8"), digest_size=16).hexdigest()
+    return f"p{page:02d}-{digest[:DIGEST_LENGTH]}.png"

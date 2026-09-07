@@ -64,3 +64,43 @@ def test_encode_png_round_trips_the_pixels() -> None:
 def test_encode_png_rejects_a_buffer_that_does_not_match_the_dimensions() -> None:
     with pytest.raises(figures.FigureError, match="12 bytes"):
         figures.encode_png(2, 2, RED + GREEN)
+
+
+# --- The asset name --------------------------------------------------------
+
+SQUARE: figures.Rect = (83.45156, 482.8865, 517.0561, 717.8801)
+
+
+def test_asset_name_has_the_page_and_a_digest() -> None:
+    name = figures.asset_name(7, SQUARE)
+    assert name.startswith("p07-")
+    assert name.endswith(".png")
+    assert len(name) == len("p07-") + 8 + len(".png")
+
+
+def test_asset_name_is_stable_for_the_same_box() -> None:
+    assert figures.asset_name(7, SQUARE) == figures.asset_name(7, SQUARE)
+
+
+def test_asset_name_ignores_movement_below_a_tenth_of_a_point() -> None:
+    """0.1pt is 0.035mm: nothing you could draw distinguishes these two boxes."""
+    nudged = (SQUARE[0] + 0.001, SQUARE[1], SQUARE[2], SQUARE[3])
+    assert figures.asset_name(7, nudged) == figures.asset_name(7, SQUARE)
+
+
+def test_asset_name_changes_when_the_box_really_moves() -> None:
+    moved = (SQUARE[0] + 5.0, SQUARE[1], SQUARE[2], SQUARE[3])
+    assert figures.asset_name(7, moved) != figures.asset_name(7, SQUARE)
+
+
+def test_asset_name_changes_with_the_page() -> None:
+    assert figures.asset_name(8, SQUARE) != figures.asset_name(7, SQUARE)
+
+
+def test_asset_name_changes_with_the_render_scale(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The scale is an input to the render, so it is an input to the name."""
+    before = figures.asset_name(7, SQUARE)
+    monkeypatch.setattr(figures, "RENDER_SCALE", figures.RENDER_SCALE * 2)
+    assert figures.asset_name(7, SQUARE) != before
