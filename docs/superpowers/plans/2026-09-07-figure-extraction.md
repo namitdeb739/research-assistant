@@ -915,8 +915,17 @@ def figure_quote(page: int, asset: str) -> highlights.Quote:
 
 
 def test_a_figure_renders_as_an_embed_bullet() -> None:
+    """The bullet wraps: 42 chars of path plus the link is 90, over the 88 width.
+
+    Asserted as the exact rendered string rather than a substring, so the
+    continuation line is documented instead of discovered. What matters is
+    that the embed itself is never broken mid-path, which is what
+    ``break_long_words=False`` buys.
+    """
     section = render("", [("Cell design", [figure_quote(7, ASSET)])])
-    assert f"- ![[{ASSET}]] ([[{PDF_NAME}#page=7|p. 7]])" in section
+    assert section == (
+        f"### Cell design\n\n- ![[{ASSET}]]\n  ([[{PDF_NAME}#page=7|p. 7]])"
+    )
 
 
 def test_a_figure_round_trips_through_render_and_split() -> None:
