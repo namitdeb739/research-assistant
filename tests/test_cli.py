@@ -7,11 +7,13 @@ read-only commands run against a temp vault through Typer's runner.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 
 import httpx
 import pytest
+from fixtures.make_highlights_pdf import write as write_pdf
 from notes import write_note
 from typer.testing import CliRunner
 
@@ -1195,3 +1197,116 @@ def test_the_reading_list_stays_out_of_every_papers_glob(tmp_path: Path) -> None
     assert "1 notes" in found.stdout
     assert bib.exit_code == 0
     assert "Included       1   notes in the vault" in report.stdout
+
+
+KEY = "yen2023soilpowered"
+
+
+def annotated_vault(tmp_path: Path) -> tuple[Path, Path]:
+    """A one-note vault whose PDF carries two highlights and one boxed figure."""
+    papers = tmp_path / "papers"
+    note = write_note(papers, "Soil-powered", key=KEY, pdf=f"{KEY}.pdf")
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir()
+    write_pdf(pdfs / f"{KEY}.pdf", with_figure=True)
+    return papers, note
+
+
+def extracted(papers: Path) -> list[dict[str, Any]]:
+    result = runner.invoke(cli.app, ["--papers-dir", str(papers), "highlights", KEY])
+    assert result.exit_code == 0, result.stdout
+    loaded: list[dict[str, Any]] = json.loads(result.stdout)
+    return loaded
+
+
+def test_highlights_json_reports_kind_and_asset(tmp_path: Path) -> None:
+    """A figure arrives with an asset and no text; a quote, the reverse."""
+    papers, _ = annotated_vault(tmp_path)
+
+    items = extracted(papers)
+
+    assert [i["kind"] for i in items] == ["figure", "quote", "quote"]
+    assert items[0]["text"] == ""
+    assert items[0]["asset"].startswith(f"assets/{KEY}/p01-")
+    assert items[1]["asset"] is None
+
+
+def test_highlights_writes_the_asset_into_the_vault(tmp_path: Path) -> None:
+    papers, _ = annotated_vault(tmp_path)
+
+    extracted(papers)
+
+    written = list((tmp_path / "assets" / KEY).glob("*.png"))
+    assert len(written) == 1
+    assert written[0].read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_applying_a_grouping_embeds_the_figure(tmp_path: Path) -> None:
+    papers, note = annotated_vault(tmp_path)
+    items = extracted(papers)
+    grouping = tmp_path / "groups.json"
+    grouping.write_text(
+        json.dumps({"Cell design": [i["order"] for i in items]}), encoding="utf-8"
+    )
+
+    result = runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "highlights", KEY, "--apply", str(grouping)],
+    )
+
+    assert result.exit_code == 0, result.stdout
+    body = note.read_text(encoding="utf-8")
+    # The asset path plus the page link is 90 characters, over render_notes'
+    # 88-column wrap width, so the bullet wraps onto a continuation line.
+    assert f"- ![[{items[0]['asset']}]]\n  ([[{KEY}.pdf#page=1|p. 1]])" in body
+
+
+def test_an_applied_figure_comes_back_carrying_its_heading(tmp_path: Path) -> None:
+    """Stickiness works on a figure, so a re-run only has to place new items."""
+    papers, _ = annotated_vault(tmp_path)
+    items = extracted(papers)
+    grouping = tmp_path / "groups.json"
+    grouping.write_text(
+        json.dumps({"Cell design": [i["order"] for i in items]}), encoding="utf-8"
+    )
+    runner.invoke(
+        cli.app,
+        ["--papers-dir", str(papers), "highlights", KEY, "--apply", str(grouping)],
+    )
+
+    assert [i["group"] for i in extracted(papers)] == ["Cell design"] * 3
+
+
+def test_a_second_run_rewrites_neither_the_note_nor_the_assets(
+    tmp_path: Path,
+) -> None:
+    """Idempotence end to end: no new bytes, no renamed files."""
+    papers, note = annotated_vault(tmp_path)
+    items = extracted(papers)
+    grouping = tmp_path / "groups.json"
+    grouping.write_text(
+        json.dumps({"Cell design": [i["order"] for i in items]}), encoding="utf-8"
+    )
+    apply = ["--papers-dir", str(papers), "highlights", KEY, "--apply", str(grouping)]
+    runner.invoke(cli.app, apply)
+    assets = tmp_path / "assets" / KEY
+    before = note.read_text(encoding="utf-8")
+    names = {p.name: p.read_bytes() for p in assets.iterdir()}
+
+    runner.invoke(cli.app, apply)
+
+    assert note.read_text(encoding="utf-8") == before
+    assert {p.name: p.read_bytes() for p in assets.iterdir()} == names
+
+
+def test_a_pdf_with_no_drawn_box_creates_no_assets_folder(tmp_path: Path) -> None:
+    """A vault nobody has boxed anything in is untouched by this feature."""
+    papers = tmp_path / "papers"
+    write_note(papers, "Soil-powered", key=KEY, pdf=f"{KEY}.pdf")
+    pdfs = tmp_path / "pdfs"
+    pdfs.mkdir()
+    write_pdf(pdfs / f"{KEY}.pdf")
+
+    runner.invoke(cli.app, ["--papers-dir", str(papers), "highlights", KEY])
+
+    assert not (tmp_path / "assets").exists()

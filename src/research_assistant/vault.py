@@ -43,6 +43,12 @@ if TYPE_CHECKING:
 # read as prose, and the key avoids the punctuation a title drags in.
 PDFS_DIRNAME = "pdfs"
 
+# Cropped figures sit in another sibling of the papers folder, nested one
+# folder per cite key. A bare filename would lean on Obsidian's
+# shortest-unique-path resolution; nesting keeps two papers from ever
+# colliding on the same digest.
+ASSETS_DIRNAME = "assets"
+
 # Topic hub notes sit in another sibling of the papers folder. A topic is only
 # worth a note once two papers share it: a label appearing on one paper of 157
 # groups nothing, and as a graph node it is a hair rather than a cluster.

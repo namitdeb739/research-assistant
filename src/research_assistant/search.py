@@ -326,6 +326,11 @@ def pdfs_dir_for(papers_dir: Path) -> Path:
     return papers_dir.parent / vault.PDFS_DIRNAME
 
 
+def assets_dir_for(papers_dir: Path) -> Path:
+    """Where cropped figures sit: a sibling of the papers folder."""
+    return papers_dir.parent / vault.ASSETS_DIRNAME
+
+
 def load(papers_dir: Path) -> list[Record]:
     """Read every note in the vault, once."""
     if not papers_dir.is_dir():

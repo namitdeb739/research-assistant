@@ -23,6 +23,7 @@ import typer
 
 from research_assistant import (
     bibtex,
+    figures,
     graph,
     health,
     highlights,
@@ -2323,13 +2324,38 @@ def _pdf_of(record: search.Record) -> Path:
     return record.pdf_path
 
 
-def _extract(record: search.Record) -> list[highlights.Highlight]:
-    """Read one note's PDF, reporting what had no recoverable text on stderr."""
+def _extract(record: search.Record, *, papers_dir: Path) -> list[highlights.Highlight]:
+    """Read one note's PDF, rendering any boxed figure and reporting the rest.
+
+    The join between the two modules. ``highlights`` yields a figure's
+    rectangle and knows nothing about rasterising; ``figures`` turns a
+    rectangle into a file and knows nothing about notes. ``render`` is called
+    only for the figures actually found, and only it creates the assets
+    folder, so a vault nobody has boxed anything in gets no ``assets/`` at all.
+    """
+    pdf = _pdf_of(record)
     try:
-        found, skipped = highlights.extract(_pdf_of(record))
+        found, skipped = highlights.extract(pdf)
     except highlights.HighlightError as exc:
         typer.secho(str(exc), fg=typer.colors.RED, err=True)
         raise typer.Exit(1) from exc
+
+    into = search.assets_dir_for(papers_dir) / record.cite_key
+    resolved: list[highlights.Highlight] = []
+    for item in found:
+        if item.kind != highlights.KIND_FIGURE or item.rect is None:
+            resolved.append(item)
+            continue
+        try:
+            path = figures.render(pdf, item.page, item.rect, into=into)
+        except figures.FigureError as exc:
+            typer.secho(str(exc), fg=typer.colors.RED, err=True)
+            raise typer.Exit(1) from exc
+        # Vault-relative, because assets nest one folder per paper and a bare
+        # filename would lean on Obsidian's shortest-unique-path resolution.
+        asset = f"{vault.ASSETS_DIRNAME}/{record.cite_key}/{path.name}"
+        resolved.append(replace(item, asset=asset))
+
     for reason, note in (
         (
             highlights.FREE_DRAW,
@@ -2345,7 +2371,7 @@ def _extract(record: search.Record) -> list[highlights.Highlight]:
                 fg=typer.colors.YELLOW,
                 err=True,
             )
-    return found
+    return resolved
 
 
 def _notes_section(record: search.Record) -> str:
@@ -2361,15 +2387,17 @@ def _notes_section(record: search.Record) -> str:
     return record.sections["Notes"]
 
 
-def _placed(record: search.Record) -> dict[tuple[int, str], str]:
+def _placed(record: search.Record) -> dict[tuple[int, str, str | None], str]:
     """Which heading each quote already in the note sits under.
 
     This is what makes a re-run sticky: a quote that is already grouped comes
-    back carrying its heading, so stage 2 only has to place the new ones.
+    back carrying its heading, so stage 2 only has to place the new ones. The
+    key includes ``asset`` so two figures on the same page, both with empty
+    text, are not conflated into one entry.
     """
     _, groups = highlights.split_notes(record.sections.get("Notes", ""))
     return {
-        (quote.page, quote.text): heading
+        (quote.page, quote.text, quote.asset): heading
         for heading, quotes in groups
         for quote in quotes
     }
@@ -2444,7 +2472,7 @@ def highlight(
         raise typer.Exit(1)
 
     record = _resolve(records, target)
-    found = _extract(record)
+    found = _extract(record, papers_dir=papers_dir)
 
     if gold:
         typer.echo(
@@ -2467,8 +2495,10 @@ def highlight(
                 {
                     "order": h.order,
                     "page": h.page,
+                    "kind": h.kind,
                     "text": h.text,
-                    "group": placed.get((h.page, h.text)),
+                    "asset": h.asset,
+                    "group": placed.get((h.page, h.text, h.asset)),
                 }
                 for h in found
             ],
@@ -2544,7 +2574,7 @@ def _apply_grouping(
     by_order = {
         h.order: heading
         for h in found
-        if (heading := placed.get((h.page, h.text))) is not None
+        if (heading := placed.get((h.page, h.text, h.asset))) is not None
     }
     try:
         groups = highlights.group_quotes(
@@ -2617,9 +2647,13 @@ def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> Non
         except highlights.HighlightError as exc:
             typer.secho(str(exc), fg=typer.colors.YELLOW, err=True)
             continue
-        derived = {(h.page, h.text) for h in found}
-        in_note = {(q.page, q.text) for _, quotes in groups for q in quotes}
-        for page, text in sorted(in_note - derived):
+        # A figure's text is always empty, so (page, text) alone would
+        # conflate two boxed figures on the same page. Widen with the asset
+        # each would resolve to — computed from the name alone, never
+        # rendered, since an audit must not write to disk.
+        derived = {(h.page, h.text, _expected_asset(record.cite_key, h)) for h in found}
+        in_note = {(q.page, q.text, q.asset) for _, quotes in groups for q in quotes}
+        for page, text, _asset in sorted(in_note - derived):
             # The nearest quote on the same page is what it was probably edited
             # from, and showing both is what makes the report actionable.
             same_page = [h.text for h in found if h.page == page]
@@ -2672,6 +2706,18 @@ def _audit_highlights(records: Sequence[search.Record], *, as_json: bool) -> Non
 def _distance(a: str, b: str) -> int:
     """How unalike two quotes are: enough to pick the one that was edited."""
     return len(set(a.split()) ^ set(b.split()))
+
+
+def _expected_asset(cite_key: str, h: highlights.Highlight) -> str | None:
+    """The vault-relative path a figure would resolve to, without rendering.
+
+    ``_audit_highlights`` must never write to disk, so this calls
+    ``figures.asset_name`` for the filename alone rather than
+    ``figures.render``, which is the only thing that actually rasterises.
+    """
+    if h.kind != highlights.KIND_FIGURE or h.rect is None:
+        return None
+    return f"{vault.ASSETS_DIRNAME}/{cite_key}/{figures.asset_name(h.page, h.rect)}"
 
 
 @app.command()
