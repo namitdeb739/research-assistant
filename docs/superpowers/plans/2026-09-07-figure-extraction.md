@@ -523,7 +523,17 @@ def render(pdf: Path, page: int, rect: Rect, *, into: Path) -> Path:
     except Exception as exc:
         raise FigureError(f"{pdf}: {exc}") from exc
     into.mkdir(parents=True, exist_ok=True)
-    target.write_bytes(png)
+    # Staged, not written in place. The fast path above trusts the file's mere
+    # existence, so a write torn by a crash would leave a truncated PNG that
+    # every later call returns forever. Same directory, because os.replace is
+    # atomic only within one filesystem.
+    staged = target.with_name(f"{target.name}.tmp")
+    try:
+        staged.write_bytes(png)
+        os.replace(staged, target)
+    except BaseException:
+        staged.unlink(missing_ok=True)
+        raise
     return target
 ```
 

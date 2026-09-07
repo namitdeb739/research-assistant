@@ -109,6 +109,14 @@ effect: **if the file exists it is not re-rendered.** Version drift therefore
 cannot churn the vault, because a second run rasterises nothing it has already
 rasterised.
 
+That guarantee carries a precondition the first draft of this document missed.
+If existence alone is trusted, an asset must never exist half-written, so it is
+staged beside its target and moved into place with `os.replace` — atomic within
+one filesystem, which is why the staging file is a sibling rather than a temp
+directory. Written in place instead, a crash mid-write would leave a truncated
+PNG that satisfies the existence check forever and no re-run would repair: the
+one way this design could silently poison a vault.
+
 **Rendering.** `pypdfium2`, one new dependency. `draw_annots=False`, so the crop
 is the paper rather than the paper with your own box drawn across it. Scale is a
 documented constant at 200 DPI: 150 is legible but soft on caption serifs, 300
