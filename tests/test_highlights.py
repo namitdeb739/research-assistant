@@ -183,6 +183,21 @@ def test_a_quote_still_reports_its_kind(fixture_pdf: Path) -> None:
     assert {h.kind for h in found} == {highlights.KIND_QUOTE}
 
 
+def test_a_figures_rect_is_translated_to_the_mediabox_origin(tmp_path: Path) -> None:
+    """A page whose mediabox does not start at (0, 0) is the case this protects.
+
+    x and y are offset by different amounts (20 vs 50) so a swapped or an
+    added-instead-of-subtracted translation fails this, rather than passing by
+    symmetry the way an equal offset would.
+    """
+    offset_pdf = write(
+        tmp_path / "offset.pdf", with_figure=True, mediabox_origin=(20.0, 50.0)
+    )
+    found, _ = highlights.extract(offset_pdf)
+    figures = [h for h in found if h.kind == highlights.KIND_FIGURE]
+    assert [(f.page, f.rect) for f in figures] == [(1, FIGURE_RECT)]
+
+
 # --- The note region: parsing it back, and writing it ----------------------
 
 

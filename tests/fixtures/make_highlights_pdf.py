@@ -94,6 +94,7 @@ def build(
     *,
     with_figure: bool = False,
     figure_rect: tuple[float, float, float, float] = FIGURE_RECT,
+    mediabox_origin: tuple[float, float] = (0.0, 0.0),
 ) -> bytes:
     """The whole PDF: two pages, two selection highlights, one free-draw.
 
@@ -101,6 +102,11 @@ def build(
     ``figure_rect``, and a second one carrying the whole-page ``FLT_MAX``
     rectangle a free-draw writes, which the area ceiling must reject. Without
     the second, nothing distinguishes an area test from a finiteness test.
+
+    ``mediabox_origin`` moves page 1's ``/MediaBox`` off ``(0, 0)``, real for
+    a scanned or cropped PDF. ``figure_rect`` is shifted along with it, so the
+    drawn square sits in the same place on the page either way. The default
+    leaves every existing caller's PDF byte-identical.
     """
     # Page 1: one column, one highlight spanning two lines. `ignored` sits on
     # the second line but outside every quad, so it proves the char selection
@@ -130,8 +136,17 @@ def build(
             f"/Rect [{x0:g} {y0:g} {x1:g} {y1:g}]/C [1 1 0]>>"
         )
 
+    ox, oy = mediabox_origin
+    # figure_rect is page-relative; the annotation's /Rect is absolute, so the
+    # mediabox origin has to be added back in before it is written out.
+    absolute_figure_rect = (
+        figure_rect[0] + ox,
+        figure_rect[1] + oy,
+        figure_rect[2] + ox,
+        figure_rect[3] + oy,
+    )
     drawn = (
-        f" {_square(figure_rect)}"
+        f" {_square(absolute_figure_rect)}"
         f" <</Type/Annot/Subtype/Square/Rect [0 0 {FLT_MAX} {FLT_MAX}]/C [1 1 0]>>"
         if with_figure
         else ""
@@ -143,7 +158,8 @@ def build(
         b"<</Type/Catalog/Pages 2 0 R>>",
         b"<</Type/Pages/Kids [3 0 R 5 0 R]/Count 2>>",
         (
-            "<</Type/Page/Parent 2 0 R/MediaBox [0 0 612 792]"
+            f"<</Type/Page/Parent 2 0 R/MediaBox [{ox:g} {oy:g}"
+            f" {ox + 612:g} {oy + 792:g}]"
             "/Resources <</Font <</F1 7 0 R>>>>/Contents 4 0 R"
             f"/Annots [{page_one_annots}]>>"
         ).encode("ascii"),
@@ -197,7 +213,14 @@ def write(
     *,
     with_figure: bool = False,
     figure_rect: tuple[float, float, float, float] = FIGURE_RECT,
+    mediabox_origin: tuple[float, float] = (0.0, 0.0),
 ) -> Path:
     """Write the fixture PDF to ``path`` and return it."""
-    path.write_bytes(build(with_figure=with_figure, figure_rect=figure_rect))
+    path.write_bytes(
+        build(
+            with_figure=with_figure,
+            figure_rect=figure_rect,
+            mediabox_origin=mediabox_origin,
+        )
+    )
     return path

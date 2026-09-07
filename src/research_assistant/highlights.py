@@ -155,7 +155,7 @@ def _rect(
         return None
     try:
         x0, y0, x1, y1 = (float(v) for v in values)
-    except TypeError, ValueError:
+    except (TypeError, ValueError):  # fmt: skip
         return None
     px0, py0, px1, py1 = (float(v) for v in box)
     left, right = max(min(x0, x1), px0), min(max(x0, x1), px1)
