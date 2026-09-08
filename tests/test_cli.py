@@ -1401,3 +1401,108 @@ def test_audit_names_the_asset_of_a_drifted_figure(tmp_path: Path) -> None:
             "asset": old_asset,
         }
     ]
+
+
+def _project(
+    root: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    body: str,
+    *,
+    run_from: Path | None = None,
+) -> Path:
+    """Write a project config at `root`, and run as if from inside the project."""
+    monkeypatch.delenv("VAULT_PAPERS_DIR", raising=False)
+    path = root / cli._PROJECT_CONFIG
+    path.write_text(body, encoding="utf-8")
+    (run_from or root).mkdir(parents=True, exist_ok=True)
+    monkeypatch.chdir(run_from or root)
+    return path
+
+
+def test_the_project_config_supplies_the_papers_dir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The vault is per-project, so the project is where it can be recorded."""
+    papers = tmp_path / "vault"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    project = tmp_path / "repo"
+    project.mkdir()
+    _project(project, monkeypatch, f'papers_dir = "{papers}"\n')
+
+    result = runner.invoke(cli.app, ["find", "Mementos"])
+
+    assert result.exit_code == 0
+    assert "ransford2011mementos" in result.stdout
+
+
+def test_the_project_config_is_found_from_a_subdirectory(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Commands run from wherever you happen to be inside the project."""
+    papers = tmp_path / "vault"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    project = tmp_path / "repo"
+    project.mkdir()
+    _project(
+        project,
+        monkeypatch,
+        f'papers_dir = "{papers}"\n',
+        run_from=project / "thesis" / "chapters",
+    )
+
+    result = runner.invoke(cli.app, ["find", "Mementos"])
+
+    assert result.exit_code == 0
+    assert "ransford2011mementos" in result.stdout
+
+
+def test_a_relative_papers_dir_resolves_against_the_config_not_the_cwd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Otherwise the same config would name a different folder per directory."""
+    project = tmp_path / "repo"
+    project.mkdir()
+    write_note(project / "vault", "Mementos", key="ransford2011mementos")
+    _project(
+        project,
+        monkeypatch,
+        'papers_dir = "vault"\n',
+        run_from=project / "thesis",
+    )
+
+    result = runner.invoke(cli.app, ["find", "Mementos"])
+
+    assert result.exit_code == 0
+    assert "ransford2011mementos" in result.stdout
+
+
+def test_the_environment_outranks_the_project_config(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gitignored file records the usual vault; the variable overrides it."""
+    papers = tmp_path / "vault"
+    write_note(papers, "Mementos", key="ransford2011mementos")
+    project = tmp_path / "repo"
+    project.mkdir()
+    _project(project, monkeypatch, f'papers_dir = "{tmp_path / "unused"}"\n')
+    monkeypatch.setenv("VAULT_PAPERS_DIR", str(papers))
+
+    result = runner.invoke(cli.app, ["find", "Mementos"])
+
+    assert result.exit_code == 0
+    assert "ransford2011mementos" in result.stdout
+
+
+def test_a_malformed_project_config_names_itself_rather_than_falling_through(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Silently ignoring it would report a missing folder the file plainly names."""
+    project = tmp_path / "repo"
+    project.mkdir()
+    path = _project(project, monkeypatch, "papers_dir = [not toml\n")
+
+    result = runner.invoke(cli.app, ["find", "Mementos"])
+
+    assert result.exit_code == 1
+    assert str(path) in result.stderr
+    assert "No papers folder" not in result.stderr

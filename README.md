@@ -47,16 +47,17 @@ Install both: the plugin drives the CLI.
 **The CLI:**
 
 ```bash
-uv tool install git+https://github.com/namitdeb739/research-assistant@v0.5.0
+uv tool install git+https://github.com/namitdeb739/research-assistant@v0.6.0
 ```
 
-Drop the `@v0.5.0` to track `main` instead. Pinning is the better default here
+Drop the `@v0.6.0` to track `main` instead. Pinning is the better default here
 because the **note format is versioned and the tag is the format**: 0.3.0 added
 seven frontmatter keys, and an unpinned reinstall can move a vault's format
 under you. 0.5.0 adds the `assets/` folder and the figure embed, both additive:
 a note written by 0.4.0 stays valid, and a vault with no drawn boxes is
-byte-identical after the upgrade. `uv tool upgrade research-assistant` moves a
-pinned install forward only when you change the pin, which is the point.
+byte-identical after the upgrade. 0.6.0 touches no note at all — it only adds a
+place to record which vault a project uses. `uv tool upgrade research-assistant`
+moves a pinned install forward only when you change the pin, which is the point.
 
 **The Claude Code plugin:**
 
@@ -85,6 +86,23 @@ skills never describe a CLI you do not have. It adds:
 |---|---|---|
 | `VAULT_PAPERS_DIR` | `--papers-dir` | The vault folder holding one note per paper. **No default**, because guessing at someone's folder layout is worse than saying so. |
 | `RESEARCH_ASSISTANT_USER_AGENT` | — | Your contact address for the Crossref and OpenAlex polite pools, e.g. `myproject/1.0 (mailto:you@example.com)`. Unset means the anonymous pool: slower, but works. |
+
+A project can record its own vault in `.research-assistant.toml`, found from the
+working directory upwards, so commands work from anywhere inside the project:
+
+```toml
+papers_dir = "~/Obsidian/papers"
+```
+
+`--papers-dir` outranks `VAULT_PAPERS_DIR`, which outranks the file. A relative
+`papers_dir` resolves against the file, not the working directory.
+
+**Prefer this to putting `VAULT_PAPERS_DIR` in a `.env`.** A vault path is
+configuration, not a credential, and `.env` is the secrets convention — which is
+why sandboxes and agent harnesses deny reading it, taking your vault path down
+with the secrets it is pooled among. Keeping one tool's typed settings in their
+own file is readable without exposing anything. Gitignore it: the contents are
+one person's folder layout, not the project's.
 
 ## Commands
 

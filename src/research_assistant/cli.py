@@ -9,13 +9,14 @@ import os
 import re
 import subprocess
 import sys
+import tomllib
 import urllib.parse
 from dataclasses import dataclass, replace
 
 # Typer resolves these annotations at runtime through get_type_hints(), so
 # `Path` cannot move into the type-checking block despite only appearing in
 # annotations: --papers-dir and --out would both stop resolving.
-from pathlib import Path  # noqa: TC003
+from pathlib import Path
 from typing import TYPE_CHECKING, Annotated, Any, Final
 
 import httpx
@@ -45,6 +46,13 @@ app = typer.Typer(add_completion=False, help=__doc__)
 # layout is worse than saying so.
 _PAPERS_DIR: Path | None = None
 
+# A project's vault, recorded next to the project. This is deliberately not the
+# environment: `.env` is the secrets convention, so a sandboxed shell is denied
+# it wholesale, and a vault path is configuration rather than a credential. One
+# tool's typed settings can be read without exposing anything, which an
+# open-ended file of exports cannot promise.
+_PROJECT_CONFIG: Final = ".research-assistant.toml"
+
 
 @app.callback()
 def _main(
@@ -61,16 +69,49 @@ def _main(
     _PAPERS_DIR = papers_dir
 
 
+def _project_config() -> Path | None:
+    """The nearest project config, from the working directory upwards."""
+    here = Path.cwd()
+    for folder in (here, *here.parents):
+        if (path := folder / _PROJECT_CONFIG).is_file():
+            return path
+    return None
+
+
+def _configured_papers_dir() -> Path | None:
+    """The papers folder the project config records, if there is one and it does."""
+    path = _project_config()
+    if path is None:
+        return None
+    try:
+        config = tomllib.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
+        typer.secho(f"{path}: {exc}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(1) from exc
+    recorded = config.get("papers_dir")
+    if recorded is None:
+        return None
+    if not isinstance(recorded, str):
+        typer.secho(
+            f"{path}: papers_dir must be a string.", fg=typer.colors.RED, err=True
+        )
+        raise typer.Exit(1)
+    # Against the file, not the working directory: the same config has to mean
+    # the same folder from anywhere in the project.
+    return path.parent / Path(recorded).expanduser()
+
+
 def _papers_dir() -> Path:
     """The vault folder holding one note per paper."""
-    if _PAPERS_DIR is None:
+    if (resolved := _PAPERS_DIR or _configured_papers_dir()) is None:
         typer.secho(
-            "No papers folder: pass --papers-dir or set VAULT_PAPERS_DIR.",
+            "No papers folder: pass --papers-dir, set VAULT_PAPERS_DIR, or record"
+            f" papers_dir in {_PROJECT_CONFIG}.",
             fg=typer.colors.RED,
             err=True,
         )
         raise typer.Exit(1)
-    return _PAPERS_DIR.expanduser()
+    return resolved.expanduser()
 
 
 def _describe(record: Paper) -> None:
