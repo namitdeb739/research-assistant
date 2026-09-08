@@ -17,8 +17,9 @@ are things the search commands genuinely cannot do.
 path precisely so it can be handed to Read, and warning about that would fight
 the workflow.
 
-Silent unless `VAULT_PAPERS_DIR` is set. There is no default: without a vault to
-point at, every path this could match belongs to somebody else.
+Silent unless the project names a vault, in `.research-assistant.toml` or
+`VAULT_PAPERS_DIR`. There is no default: without a vault to point at, every path
+this could match belongs to somebody else.
 
 At most two nudges per session: one for searching, one for reading.
 """
@@ -30,6 +31,8 @@ import re
 import sys
 import tempfile
 from pathlib import Path
+
+import tomllib
 
 # Which argument carries the path, per tool.
 PATH_KEYS = {
@@ -61,9 +64,28 @@ READ_NUDGE = (
 
 
 def papers_dir() -> Path | None:
-    """The vault folder, or ``None`` when this project has no vault."""
+    """The vault folder, or ``None`` when this project has no vault.
+
+    The same resolution the CLI does, minus the flag it has no access to. Kept
+    inline rather than imported: a hook runs under whatever interpreter Claude
+    Code has, which need not be the one the package is installed into.
+    """
     override = os.environ.get("VAULT_PAPERS_DIR")
-    return Path(override).expanduser() if override else None
+    if override:
+        return Path(override).expanduser()
+    here = Path.cwd()
+    for folder in (here, *here.parents):
+        found = folder / ".research-assistant.toml"
+        if not found.is_file():
+            continue
+        with contextlib.suppress(OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
+            recorded = tomllib.loads(found.read_text(encoding="utf-8")).get(
+                "papers_dir"
+            )
+            if isinstance(recorded, str):
+                return found.parent / Path(recorded).expanduser()
+        return None
+    return None
 
 
 def watched_roots(papers: Path) -> list[Path]:

@@ -7,7 +7,8 @@ description: Use when answering any literature question against an Obsidian bibl
 
 One Markdown note per paper, PDFs in a sibling `pdfs/`, topic hubs in a sibling
 `topics/`, and the candidates awaiting triage in a sibling `Reading List.md`.
-`VAULT_PAPERS_DIR` points at the notes; the bibliography is generated from
+The project's `.research-assistant.toml` points at the notes (or
+`VAULT_PAPERS_DIR`, which overrides it); the bibliography is generated from
 them.
 
 Inside a uv project that depends on the package, prefix every command with `uv

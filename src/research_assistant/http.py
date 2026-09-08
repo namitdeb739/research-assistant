@@ -10,9 +10,10 @@ Nothing here knows what a work is. It sends a GET and hands back the response.
 
 from __future__ import annotations
 
-import os
 import time
 from typing import TYPE_CHECKING
+
+from research_assistant.config import user_agent
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Mapping
@@ -22,12 +23,6 @@ if TYPE_CHECKING:
 RETRY_STATUSES = frozenset({429, 500, 502, 503, 504})
 MAX_ATTEMPTS = 4
 BACKOFF_SECONDS = 1.0
-
-# Crossref asks for a contact address in the User-Agent for the polite pool. The
-# address must be the caller's own, so it comes from the environment rather than
-# being baked in: a shared literal would make everyone's traffic look like one
-# user's. Unset means no mailto, which is merely the anonymous pool, not an error.
-USER_AGENT = os.getenv("RESEARCH_ASSISTANT_USER_AGENT", "research-assistant/0.1")
 
 
 def retry_after(response: httpx.Response, attempt: int) -> float:
@@ -61,7 +56,7 @@ def get_with_retry(
         return client.get(
             url,
             params=dict(params) if params is not None else None,
-            headers={"User-Agent": USER_AGENT},
+            headers={"User-Agent": user_agent()},
             timeout=timeout,
         )
 

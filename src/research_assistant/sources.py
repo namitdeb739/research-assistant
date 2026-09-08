@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, Final
 
 import httpx
 
-from research_assistant.http import USER_AGENT, get_with_retry
+from research_assistant.config import user_agent
+from research_assistant.http import get_with_retry
 from research_assistant.models import Paper
 
 if TYPE_CHECKING:
@@ -320,7 +321,7 @@ def fetch_pdf(url: str, *, client: httpx.Client) -> bytes | None:
     only trusted if it actually starts with the PDF magic bytes.
     """
     try:
-        response = client.get(url, headers={"User-Agent": USER_AGENT}, timeout=60.0)
+        response = client.get(url, headers={"User-Agent": user_agent()}, timeout=60.0)
     except httpx.HTTPError:
         return None
     if response.status_code >= 400:

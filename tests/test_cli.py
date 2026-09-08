@@ -17,7 +17,16 @@ from fixtures.make_highlights_pdf import write as write_pdf
 from notes import write_note
 from typer.testing import CliRunner
 
-from research_assistant import cli, graph, health, screening, search, sources, vault
+from research_assistant import (
+    cli,
+    config,
+    graph,
+    health,
+    screening,
+    search,
+    sources,
+    vault,
+)
 
 runner = CliRunner()
 
@@ -1412,7 +1421,7 @@ def _project(
 ) -> Path:
     """Write a project config at `root`, and run as if from inside the project."""
     monkeypatch.delenv("VAULT_PAPERS_DIR", raising=False)
-    path = root / cli._PROJECT_CONFIG
+    path = root / config.NAME
     path.write_text(body, encoding="utf-8")
     (run_from or root).mkdir(parents=True, exist_ok=True)
     monkeypatch.chdir(run_from or root)
@@ -1506,3 +1515,32 @@ def test_a_malformed_project_config_names_itself_rather_than_falling_through(
     assert result.exit_code == 1
     assert str(path) in result.stderr
     assert "No papers folder" not in result.stderr
+
+
+def test_the_project_config_supplies_the_polite_pool_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The address is a project's own, so the project is where it belongs."""
+    monkeypatch.delenv("RESEARCH_ASSISTANT_USER_AGENT", raising=False)
+    _project(tmp_path, monkeypatch, 'user_agent = "earth/1.0 (mailto:a@b.c)"\n')
+
+    assert config.user_agent() == "earth/1.0 (mailto:a@b.c)"
+
+
+def test_the_environment_outranks_the_configured_address(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _project(tmp_path, monkeypatch, 'user_agent = "earth/1.0 (mailto:a@b.c)"\n')
+    monkeypatch.setenv("RESEARCH_ASSISTANT_USER_AGENT", "other/2.0")
+
+    assert config.user_agent() == "other/2.0"
+
+
+def test_no_address_anywhere_is_the_anonymous_pool_not_an_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A missing contact address costs speed, never correctness."""
+    monkeypatch.delenv("RESEARCH_ASSISTANT_USER_AGENT", raising=False)
+    _project(tmp_path, monkeypatch, 'papers_dir = "vault"\n')
+
+    assert config.user_agent() == config.DEFAULT_USER_AGENT
