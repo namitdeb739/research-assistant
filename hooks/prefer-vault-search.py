@@ -24,6 +24,8 @@ this could match belongs to somebody else.
 At most two nudges per session: one for searching, one for reading.
 """
 
+from __future__ import annotations
+
 import contextlib
 import json
 import os
@@ -32,7 +34,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-import tomllib
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python < 3.11, which bare `python3` may well be.
+    tomllib = None
 
 # Which argument carries the path, per tool.
 PATH_KEYS = {
@@ -63,6 +68,16 @@ READ_NUDGE = (
 )
 
 
+def recorded_papers_dir(text: str) -> object:
+    """The config's ``papers_dir`` value, parsed or not."""
+    if tomllib is not None:
+        return tomllib.loads(text).get("papers_dir")
+    # Without tomllib, read the one key this needs: a top-level quoted string,
+    # which is the shape the README documents.
+    match = re.search(r"""^\s*papers_dir\s*=\s*(["'])(.*?)\1""", text, re.MULTILINE)
+    return match.group(2) if match else None
+
+
 def papers_dir() -> Path | None:
     """The vault folder, or ``None`` when this project has no vault.
 
@@ -78,10 +93,9 @@ def papers_dir() -> Path | None:
         found = folder / ".research-assistant.toml"
         if not found.is_file():
             continue
-        with contextlib.suppress(OSError, UnicodeDecodeError, tomllib.TOMLDecodeError):
-            recorded = tomllib.loads(found.read_text(encoding="utf-8")).get(
-                "papers_dir"
-            )
+        # TOMLDecodeError is a ValueError.
+        with contextlib.suppress(OSError, UnicodeDecodeError, ValueError):
+            recorded = recorded_papers_dir(found.read_text(encoding="utf-8"))
             if isinstance(recorded, str):
                 return found.parent / Path(recorded).expanduser()
         return None
