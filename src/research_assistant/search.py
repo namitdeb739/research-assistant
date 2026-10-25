@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from research_assistant import vault
+from research_assistant.models import surname
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -201,11 +202,11 @@ def byline(authors: Sequence[str]) -> str:
     """
     if not authors:
         return "unknown"
-    first = authors[0].split()[-1]
+    first = surname(authors[0])
     if len(authors) == 1:
         return first
     if len(authors) == 2:
-        return f"{first} & {authors[1].split()[-1]}"
+        return f"{first} & {surname(authors[1])}"
     return f"{first} et al."
 
 

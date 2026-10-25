@@ -54,6 +54,19 @@ def test_first_author_surname() -> None:
     assert Paper(title="x").first_author_surname is None
 
 
+def test_an_organisation_is_cited_by_its_whole_name() -> None:
+    paper = Paper(title="MSP430FR599x", authors=("{Texas Instruments}",), year=2021)
+    assert paper.first_author_surname == "Texas Instruments"
+    assert paper.cite_key() == "texasinstruments2021msp430fr599x"
+
+
+def test_render_entry_keeps_an_organisation_whole() -> None:
+    paper = Paper(title="T", authors=("{AT&T Labs}", "Ada Lovelace"))
+    assert r"author = {{AT\&T Labs} and Ada Lovelace}" in bibtex.render_entry(
+        paper, "k"
+    )
+
+
 def test_render_entry_uses_booktitle_for_proceedings() -> None:
     entry = bibtex.render_entry(ENTS, "madden2026ents")
     assert entry.startswith("@inproceedings{madden2026ents,")

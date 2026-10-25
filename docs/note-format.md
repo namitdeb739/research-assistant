@@ -51,7 +51,7 @@ table view has a column and a missing value is visibly missing.
 | `title` | string | `paper` · `source` | As the publisher records it. `tidy` repairs HTML entities. |
 | `cite_key` | string | `paper` · `source` | `surnameYEARword`. A **recorded fact**, never recomputed, so the key in your bibliography is stable. |
 | `entry_type` | string | `paper` · `source` | BibTeX entry type: `article`, `inproceedings`, … |
-| `authors` | list | `paper` · `source` | Full names, in publication order. |
+| `authors` | list | `paper` · `source` | Full names, in publication order. An organisation goes in braces, `{Texas Instruments}`, so it is cited whole rather than split into a given name and a surname. |
 | `year` | int \| null | `paper` · `source` | |
 | `venue` | string \| null | `paper` · `source` | |
 | `volume` | string \| null | `paper` · `tidy --bibfields` | |

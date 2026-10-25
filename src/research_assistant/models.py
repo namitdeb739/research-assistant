@@ -15,6 +15,20 @@ def _slug(value: str) -> str:
     return _NON_ALNUM.sub("", value.lower())
 
 
+def is_organisation(name: str) -> bool:
+    """An author written in braces, ``{Texas Instruments}``, is one name whole.
+
+    BibTeX's own convention: without the braces a company is split into a
+    given name and a surname, and cited as "Instruments".
+    """
+    return name.startswith("{") and name.endswith("}")
+
+
+def surname(name: str) -> str:
+    """The name an author is cited by: the last word, or an organisation whole."""
+    return name[1:-1] if is_organisation(name) else name.split()[-1]
+
+
 @dataclass(frozen=True, slots=True)
 class Paper:
     """A single bibliographic record.
@@ -53,7 +67,7 @@ class Paper:
         """Surname of the first listed author, if any."""
         if not self.authors:
             return None
-        return self.authors[0].split()[-1]
+        return surname(self.authors[0])
 
     def cite_key(self) -> str:
         """Deterministic ``surnameYEARword`` key.

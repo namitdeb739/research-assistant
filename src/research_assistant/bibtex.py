@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from research_assistant.models import is_organisation
+
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -69,11 +71,19 @@ def escape(value: str) -> str:
     return value.translate(_ESCAPES)
 
 
+def names(people: Iterable[str]) -> str:
+    """One ``and``-joined name field, an organisation's braces kept as a group."""
+    return " and ".join(
+        f"{{{escape(name[1:-1])}}}" if is_organisation(name) else escape(name)
+        for name in people
+    )
+
+
 def render_entry(paper: Paper, key: str) -> str:
     """Render a single BibTeX entry."""
     fields: list[tuple[str, str]] = [("title", escape(paper.title))]
     if paper.authors:
-        fields.append(("author", escape(" and ".join(paper.authors))))
+        fields.append(("author", names(paper.authors)))
     if paper.year is not None:
         fields.append(("year", str(paper.year)))
     if paper.venue:
@@ -85,7 +95,7 @@ def render_entry(paper: Paper, key: str) -> str:
     for name in _TYPE_FIELDS.get(paper.entry_type, _DEFAULT_FIELDS):
         if name == "editors":
             if paper.editors:
-                fields.append(("editor", escape(" and ".join(paper.editors))))
+                fields.append(("editor", names(paper.editors)))
             continue
         value = getattr(paper, name)
         if value:

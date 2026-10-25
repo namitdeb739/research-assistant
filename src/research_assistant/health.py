@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING, Any, Final
 
 from research_assistant import search, sources
 from research_assistant.http import get_with_retry
+from research_assistant.models import surname
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -188,7 +189,7 @@ def title_similarity(left: str, right: str) -> tuple[float, float]:
 
 
 def _surname(record: search.Record) -> str:
-    return record.authors[0].split()[-1].casefold() if record.authors else ""
+    return surname(record.authors[0]).casefold() if record.authors else ""
 
 
 def is_preprint(record: search.Record) -> bool:
