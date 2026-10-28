@@ -2092,8 +2092,11 @@ def show(
 # \cite, \parencite, \autocite, \textcite, \footcite, \supercite, starred or
 # not, with any number of optional [prenote][postnote] arguments before the key
 # list. The keys themselves are one capture, split on commas by the caller.
+# natbib's \citetext holds other commands, not keys: pandoc wraps a group of
+# located citations in it, `\citetext{\citealp[p.~148]{key}; ...}`, so it is
+# skipped and the commands inside it are read instead.
 _CITE = re.compile(
-    r"\\(?:no|foot|super|auto|paren|text|smart|full)?cite[a-zA-Z]*\*?"
+    r"\\(?:no|foot|super|auto|paren|text|smart|full)?cite(?!text)[a-zA-Z]*\*?"
     r"(?:\[[^\]]*\])*\{([^}]*)\}"
 )
 # A .bib entry key, for --bib.
