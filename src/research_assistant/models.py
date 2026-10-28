@@ -15,18 +15,16 @@ def _slug(value: str) -> str:
     return _NON_ALNUM.sub("", value.lower())
 
 
-def is_organisation(name: str) -> bool:
-    """An author written in braces, ``{Texas Instruments}``, is one name whole.
-
-    BibTeX's own convention: without the braces a company is split into a
-    given name and a surname, and cited as "Instruments".
-    """
-    return name.startswith("{") and name.endswith("}")
-
-
 def surname(name: str) -> str:
-    """The name an author is cited by: the last word, or an organisation whole."""
-    return name[1:-1] if is_organisation(name) else name.split()[-1]
+    """The name an author is cited by: the last word, or a closing brace group whole.
+
+    BibTeX's own convention: ``{Texas Instruments}`` is one name, not a company
+    cited as "Instruments", and ``Mirella {Di Lorenzo}`` keeps the particle in
+    the surname rather than in the initials.
+    """
+    if name.endswith("}"):
+        return name[name.rindex("{") + 1 : -1]
+    return name.split()[-1]
 
 
 @dataclass(frozen=True, slots=True)

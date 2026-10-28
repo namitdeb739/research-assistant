@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from research_assistant.models import is_organisation
-
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
@@ -22,12 +20,12 @@ HEADER = (
     "% Regenerate with the `bib` command.\n"
 )
 
-# Characters that would otherwise start a LaTeX command or group.
+# Characters that would otherwise start a LaTeX command. Braces pass through:
+# a group is how a note keeps a word as written, `{Brazil}` from a style that
+# lowercases titles, or `Mirella {Di Lorenzo}` from being cited as "Lorenzo".
 _ESCAPES = str.maketrans(
     {
         "\\": r"\textbackslash{}",
-        "{": r"\{",
-        "}": r"\}",
         "$": r"\$",
         "&": r"\&",
         "%": r"\%",
@@ -72,11 +70,8 @@ def escape(value: str) -> str:
 
 
 def names(people: Iterable[str]) -> str:
-    """One ``and``-joined name field, an organisation's braces kept as a group."""
-    return " and ".join(
-        f"{{{escape(name[1:-1])}}}" if is_organisation(name) else escape(name)
-        for name in people
-    )
+    """One ``and``-joined name field, any braces kept as a group."""
+    return " and ".join(escape(name) for name in people)
 
 
 def render_entry(paper: Paper, key: str) -> str:
