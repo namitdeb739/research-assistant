@@ -39,12 +39,14 @@ _ESCAPES = str.maketrans(
 
 # Which field carries the venue depends on the entry type, and biblatex silently
 # drops the wrong one: a talk has no journal, a chapter's venue is its book, and
-# a book's is its series.
+# a book's is its series. A misc entry's venue says what kind of thing it is,
+# "Data sheet", which APA renders as a bracketed description after the title
+# rather than as a publisher.
 _VENUE_FIELD = {
     "inproceedings": "booktitle",
     "incollection": "booktitle",
     "book": "series",
-    "misc": "howpublished",
+    "misc": "type",
 }
 
 # Which of the bibliographic fields an entry type actually renders. A journal

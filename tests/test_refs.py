@@ -90,9 +90,9 @@ def test_render_entry_uses_journal_for_articles() -> None:
     assert "journal = {IMWUT}" in bibtex.render_entry(paper, "k")
 
 
-def test_render_entry_uses_howpublished_for_misc() -> None:
-    paper = Paper(title="T", venue="FYP final presentation", entry_type="misc")
-    assert "howpublished = {FYP final presentation}" in bibtex.render_entry(paper, "k")
+def test_render_entry_uses_type_for_misc() -> None:
+    paper = Paper(title="T", venue="Data sheet", entry_type="misc")
+    assert "type  = {Data sheet}" in bibtex.render_entry(paper, "k")
 
 
 def test_escape_protects_latex_specials() -> None:
