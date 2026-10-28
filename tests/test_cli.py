@@ -518,6 +518,12 @@ def test_cited_keys_reads_every_cite_command_and_splits_on_commas() -> None:
     }
 
 
+def test_cited_keys_reads_inside_a_citetext_group() -> None:
+    tex = r"\citetext{\citealp[p.~148]{alpha2020one}; \citealp[p.~1]{beta2021two}}"
+
+    assert cli.cited_keys(tex) == {"alpha2020one", "beta2021two"}
+
+
 def test_cited_keys_reads_bib_entry_keys() -> None:
     bib = "@article{alpha2020one,\n  title = {A}\n}\n@inproceedings{ beta2021two ,\n}"
 
