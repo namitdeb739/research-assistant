@@ -527,6 +527,9 @@ def _note_to_paper(
         retracted=_str(front.get("retracted")),
         entry_type=_str(front.get("entry_type")) or "article",
         pdf_url=_str(front.get("pdf_url")),
+        # BibTeX fields no other property carries, written into the entry as
+        # given: a newspaper article's `entrysubtype` and `day`, say.
+        extra={str(k): str(v) for k, v in (front.get("bib") or {}).items()},
     )
     return paper, (_str(front.get("cite_key")) or fallback_key)
 

@@ -103,6 +103,19 @@ def test_title_with_a_colon_survives_yaml(tmp_path: Path) -> None:
     assert paper.title == "Soil-Powered Computing: A Guide"
 
 
+def test_a_bib_mapping_reaches_the_entry_as_given(tmp_path: Path) -> None:
+    path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
+    text = path.read_text(encoding="utf-8")
+    path.write_text(
+        text.replace("tags:", "bib:\n  entrysubtype: newspaper\n  day: 4\ntags:", 1),
+        encoding="utf-8",
+    )
+
+    paper, _ = vault.read_all(papers_dir=tmp_path)[0]
+
+    assert paper.extra == {"entrysubtype": "newspaper", "day": "4"}
+
+
 def test_abstract_is_written_to_the_body(tmp_path: Path) -> None:
     path = vault.create_paper(PAPER, "yen2023soil", papers_dir=tmp_path)
 
