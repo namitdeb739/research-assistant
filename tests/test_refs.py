@@ -67,6 +67,17 @@ def test_render_entry_keeps_an_organisation_whole() -> None:
     )
 
 
+def test_a_braced_surname_keeps_its_particle() -> None:
+    paper = Paper(title="T", authors=("Mirella {Di Lorenzo}",))
+    assert paper.first_author_surname == "Di Lorenzo"
+    assert "author = {Mirella {Di Lorenzo}}" in bibtex.render_entry(paper, "k")
+
+
+def test_render_entry_keeps_a_braced_title_word() -> None:
+    paper = Paper(title="Field trials in {Brazil}")
+    assert "title = {Field trials in {Brazil}}" in bibtex.render_entry(paper, "k")
+
+
 def test_render_entry_uses_booktitle_for_proceedings() -> None:
     entry = bibtex.render_entry(ENTS, "madden2026ents")
     assert entry.startswith("@inproceedings{madden2026ents,")

@@ -124,7 +124,9 @@ def fetch_records(
 
 
 def _text(value: Any) -> str:
-    return sources.unescape(" ".join(str(value or "").split()))
+    # Braces only protect a word's case in the bibliography; Crossref has none.
+    text = str(value or "").replace("{", "").replace("}", "")
+    return sources.unescape(" ".join(text.split()))
 
 
 def drift_of(record: search.Record, work: Mapping[str, Any]) -> tuple[Drift, ...]:
